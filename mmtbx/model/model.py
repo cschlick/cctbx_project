@@ -40,6 +40,7 @@ from mmtbx import ncs
 from mmtbx.ncs.ncs_utils import apply_transforms
 from mmtbx.command_line import find_tls_groups
 from mmtbx.monomer_library.pdb_interpretation import grand_master_phil_str
+from mmtbx.geometry_restraints.external import external_energy_params_str
 from mmtbx.geometry_restraints.torsion_restraints.reference_model import \
     add_reference_dihedral_restraints_if_requested, reference_model_str, reference_model
 from mmtbx.geometry_restraints.torsion_restraints.torsion_ncs import torsion_ncs
@@ -69,11 +70,18 @@ ext2 = bp.import_ext("iotbx_pdb_hierarchy_ext")
 from iotbx_pdb_hierarchy_ext import *
 
 from six.moves import cStringIO as StringIO
-from copy import deepcopy
+from copy import copy, deepcopy
 import sys
 import math
 
 time_model_show = 0.0
+
+default_pdb_interpretation_scope = iotbx.phil.parse(
+  input_string= grand_master_phil_str + \
+                reference_model_str + \
+                external_energy_params_str,
+                process_includes=True)
+default_pdb_interpretation_scope_extracted = default_pdb_interpretation_scope.extract()
 
 def find_common_water_resseq_max(pdb_hierarchy):
   get_class = iotbx.pdb.common_residue_names_get_class
@@ -361,19 +369,14 @@ class manager(object):
     parse it. Does not need the instance of class (staticmethod).
     Then modify what needed to be modified and init this class normally.
     """
-    from mmtbx.geometry_restraints.external import external_energy_params_str
-    return iotbx.phil.parse(
-          input_string = grand_master_phil_str +\
-                         reference_model_str +\
-                         external_energy_params_str,
-          process_includes=True)
+    return deepcopy(default_pdb_interpretation_scope)
 
   @staticmethod
   def get_default_pdb_interpretation_params():
     """
     Get the default extract object (libtbx.phil.scope_extract)
     """
-    return manager.get_default_pdb_interpretation_scope().extract()
+    return deepcopy(default_pdb_interpretation_scope_extracted)
 
   def get_current_pdb_interpretation_params(self):
     """
