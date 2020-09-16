@@ -7,6 +7,7 @@ from libtbx import group_args
 import iotbx.map_manager
 import mmtbx.model
 import sys
+import numpy as np
 
 class with_bounds(object):
   """
@@ -323,6 +324,7 @@ class around_model(with_bounds):
   """
   def __init__(self, map_manager, model, box_cushion,
       wrapping = None,
+      force_cube=False,
       log = sys.stdout):
 
     self._map_manager = map_manager
@@ -366,8 +368,39 @@ class around_model(with_bounds):
     frac_min = list(flex.double(frac_min)-cushion_frac)
     # find corner grid nodes
     all_orig = map_data.all()
-    self.gridding_first = [ifloor(f*n) for f, n in zip(frac_min, all_orig)]
-    self.gridding_last  = [ iceil(f*n) for f, n in zip(frac_max, all_orig)]
+    gridding_first = [ifloor(f*n) for f, n in zip(frac_min, all_orig)]
+    gridding_last  = [ iceil(f*n) for f, n in zip(frac_max, all_orig)]
+
+    # if forcing a cube, expand the box to be the size of the largest dimension
+    if force_cube:
+      # a simple adjustment of the gridding ranges to enforce a cube.
+      # Note that this might fail if the molecule takes up a large fraction of a non-cube box
+      # so that the smallest dimension cannot be enlarged enough to match the largest.
+      # At the moment no checking occurs for this case
+
+      # make data number arrays
+      gr_first = np.array(gridding_first)
+      gr_last = np.array(gridding_last)
+      gr_range = gr_last - gr_first
+
+      gr_diff = np.max(gr_range) - gr_range         # the difference between the three box dimensions and the largest dimension
+      gr_padding = (gr_diff / 2)                    # The space we would need to add to make all sides equal
+      gr_first_pad = gr_first - gr_padding          # The new target values for "gridding_first"
+      gr_last_pad = gr_last + gr_padding            # The new target values for "gridding_last"
+
+      gr_range_pad = gr_last_pad - gr_first_pad     # The new range, this should now all be equal and whole
+      assert(np.all(gr_range_pad==gr_range_pad[0])) # assert the new box dims will all be the same
+
+
+      gr_first_pad = np.floor(gr_first_pad).astype(int)     # round the "gridding_first" values down to nearest int
+      gr_last_pad = gr_first_pad + gr_range_pad.astype(int) # add the new grid range to the "gridding_first values
+
+
+      self.gridding_first = list(gr_first_pad)
+      self.gridding_last = list(gr_last_pad)
+    else:
+      self.gridding_first = gridding_first
+      self.gridding_last = gridding_last
 
     # Ready with gridding...set up shifts and box crystal_symmetry
     self.set_shifts_and_crystal_symmetry()

@@ -832,19 +832,22 @@ class map_model_manager(object):
   def extract_all_maps_around_model(self,
      selection_string = None,
      select_unique_by_ncs = False,
-     box_cushion = 5.):
+     box_cushion = 5.,
+     force_cube = False,):
     '''
       Runs box_all_maps_around_model_and_shift_origin with extract_box=True
     '''
     return self.box_all_maps_around_model_and_shift_origin(
       selection_string = selection_string,
       box_cushion = box_cushion,
+      force_cube=force_cube,
       select_unique_by_ncs = select_unique_by_ncs,
       extract_box = True)
 
   def box_all_maps_around_model_and_shift_origin(self,
      selection_string = None,
      box_cushion = 5.,
+     force_cube = False,
      select_unique_by_ncs = False,
      extract_box = False):
     '''
@@ -895,6 +898,7 @@ class map_model_manager(object):
       model = model,
       box_cushion = box_cushion,
       wrapping = self._force_wrapping,
+      force_cube=force_cube,
       log = self.log)
     # Now box is a copy of map_manager and model that is boxed
 
