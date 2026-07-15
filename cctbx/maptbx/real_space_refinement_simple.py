@@ -114,6 +114,7 @@ class lbfgs(object):
         unit_cell=None,
         selection_variable=None,
         selection_variable_real_space=None,
+        weights=None,
         geometry_restraints_manager=None,
         energies_sites_flags=None,
         gradient_only=False,
@@ -136,6 +137,7 @@ class lbfgs(object):
       selection_variable_real_space = flex.bool(sites_cart.size(), True)
     O.lbfgs_core_params = lbfgs_core_params
     O.gradients_method = gradients_method
+    O.weights = weights
     O.x_previous = None
     O.states_collector = states_collector
     O.gradient_only=gradient_only
@@ -163,6 +165,11 @@ class lbfgs(object):
     else:
       O.sites_cart = sites_cart.deep_copy()
       O.x = sites_cart.select(O.selection_variable).as_double()
+    # per-atom density weights, aligned with the variable sites
+    if (O.weights is None or O.selection_variable is None):
+      O.weights_variable = O.weights
+    else:
+      O.weights_variable = O.weights.select(O.selection_variable)
     O.number_of_function_evaluations = -1
     O.f_start, O.g_start = O.compute_functional_and_gradients()
     O.minimizer = scitbx.lbfgs.run(
@@ -203,13 +210,21 @@ class lbfgs(object):
             sites_cart  = O.sites_cart_variable,
             delta       = O.real_space_gradients_delta,
             selection   = O.selection_variable_real_space)
-        else:
+        elif (O.weights_variable is None):
           o = maptbx.target_and_gradients_simple(
             unit_cell     = O.unit_cell,
             map_target    = O.density_map,
             sites_cart    = O.sites_cart_variable,
             selection     = O.selection_variable_real_space,
             interpolation = O.gradients_method)
+        else:
+          o = maptbx.target_and_gradients_simple(
+            unit_cell     = O.unit_cell,
+            map_target    = O.density_map,
+            sites_cart    = O.sites_cart_variable,
+            selection     = O.selection_variable_real_space,
+            interpolation = O.gradients_method,
+            weights       = O.weights_variable)
         rs_f = o.target()
         rs_g = o.gradients()
       else:
