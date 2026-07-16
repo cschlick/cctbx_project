@@ -12,9 +12,12 @@ Each per-atom resolution is then mapped to a weight (better/smaller resolution
 normalized to mean 1 so the weights act *relatively* on the density term without
 changing the overall density-vs-geometry balance.
 
-This needs only a single map -- no half maps and no model map. The model is used
-only to place the windows. The resulting weight array plugs directly into
-``mmtbx.refinement.real_space.rsr_peratom.run(weights=...)`` (and the
+The windowed-d99 estimate needs only a single map, but it is noisy at the
+per-atom scale. When two half maps are available, prefer
+``fsc_local_resolution_weights`` -- a per-atom local resolution from the
+validated half-map FSC (``map_model_manager.local_resolution_map``), which is
+the model-free gold standard. Both produce a weight array that plugs directly
+into ``mmtbx.refinement.real_space.rsr_peratom.run(weights=...)`` (and the
 ``individual_sites`` / ``real_space_refinement_simple`` ``weights`` argument).
 """
 from __future__ import absolute_import, division, print_function
@@ -115,9 +118,60 @@ def local_resolution_weights(map_data, unit_cell, sites_cart,
 
   Returns a flex.double parallel to sites_cart, suitable for the ``weights``
   argument of the real-space refinement engine. See the module docstring.
+
+  NOTE: the single-map windowed d99 estimate above is cheap but noisy at the
+  per-atom scale. When two half maps are available, prefer the half-map FSC
+  estimate below (fsc_local_resolution_weights) -- it is the validated,
+  model-free local-resolution signal.
   """
   resolution = windowed_local_resolution(
     map_data=map_data, unit_cell=unit_cell, sites_cart=sites_cart,
     window_edge=window_edge)
+  return weights_from_resolution(
+    resolution, power=power, weight_min=weight_min, weight_max=weight_max)
+
+
+def fsc_local_resolution(map_model_manager, box_cushion=5.0,
+                         map_id_1='map_manager_1', map_id_2='map_manager_2',
+                         fsc_cutoff=0.5, n_bins=20):
+  """
+  Per-atom local resolution (Angstrom) from half-map FSC.
+
+  Uses the validated map_model_manager.local_resolution_map (band-pass each
+  half map to resolution shells, take a smoothed local real-space correlation
+  between them, and find where it crosses fsc_cutoff at each voxel), then
+  samples that field at the atoms. The manager is boxed around the model first
+  (extract_all_maps_around_model) so the per-shell FFTs run on a small grid --
+  on a full-size EM map this is the difference between seconds and hours.
+
+  Requires two half maps registered in the manager under map_id_1 / map_id_2.
+  Returns a flex.double parallel to the model's atoms.
+
+  fsc_cutoff defaults to 0.5 rather than the usual 0.143: validated against a
+  synthetic ground truth, the higher cutoff is much more robust to the fine bias
+  that a small analysis neighborhood introduces (spurious local noise
+  correlation clears 0.143 easily but not 0.5), so it preserves local-resolution
+  *contrast* -- which is what the weights depend on. The trade-off is that
+  absolute values run coarser than a 0.143 estimate on real (gradual-falloff)
+  maps.
+  """
+  b = map_model_manager.extract_all_maps_around_model(box_cushion=box_cushion)
+  lr = b.local_resolution_map(
+    map_id_1=map_id_1, map_id_2=map_id_2,
+    fsc_cutoff=fsc_cutoff, n_bins=n_bins).map_data()
+  xrs = b.model().get_xray_structure()
+  sites_frac = xrs.unit_cell().fractionalize(xrs.sites_cart())
+  return flex.double([maptbx.eight_point_interpolation(lr, sites_frac[i])
+                      for i in range(sites_frac.size())])
+
+
+def fsc_local_resolution_weights(map_model_manager, power=2.0,
+                                 weight_min=0.1, weight_max=10.0, **kw):
+  """
+  Convenience wrapper: half-map FSC local resolution -> normalized per-atom
+  weights (mean 1). Preferred over the windowed-d99 weights when half maps are
+  available. Extra keyword arguments are passed to fsc_local_resolution.
+  """
+  resolution = fsc_local_resolution(map_model_manager, **kw)
   return weights_from_resolution(
     resolution, power=power, weight_min=weight_min, weight_max=weight_max)
