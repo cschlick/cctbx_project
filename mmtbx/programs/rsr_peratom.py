@@ -17,6 +17,25 @@ gradients_method = fd linear quadratic *tricubic
 max_iterations = 150
   .type = int
   .help = "LBFGS iteration cap per refinement run."
+weighting = *none local_resolution
+  .type = choice(multi = False)
+  .help = "Per-atom weighting of the density term. 'none' is standard "
+          "uniform-weight refinement. 'local_resolution' down-weights atoms in "
+          "poor local density (estimated by a windowed d99) so they lean on the "
+          "geometry restraints, and trusts the map where local resolution is "
+          "high. Only applies to analytic gradients_method (not fd)."
+local_resolution {
+  window = 10.0
+    .type = float
+    .help = "Edge length (Angstrom) of the cubic window used for the per-atom "
+            "windowed-d99 local-resolution estimate. Roughly 2-4x the map "
+            "resolution is sensible."
+  power = 2.0
+    .type = float
+    .help = "Sharpness of the resolution-to-weight mapping: "
+            "weight = (median_resolution / local_resolution)**power, clamped "
+            "and normalized to mean 1."
+}
 '''
 # Note: output.file_name / output.overwrite come from ProgramTemplate's
 # reserved output scope, so they are not redefined here.
@@ -69,7 +88,25 @@ How to run:
       print('Building geometry restraints', file=self.logger)
       model.process(make_restraints=True)
 
-    # 3. Per-atom real-space refinement (tricubic by default).
+    # 3. Optional per-atom weights from local map resolution.
+    weights = None
+    if self.params.weighting == 'local_resolution':
+      if self.params.gradients_method == 'fd':
+        print('weighting=local_resolution has no effect with '
+              'gradients_method=fd; skipping.', file=self.logger)
+      else:
+        from mmtbx.refinement.real_space import local_resolution_weights
+        print('Computing per-atom weights from local resolution '
+              '(windowed d99, window=%.1f A)' %
+              self.params.local_resolution.window, file=self.logger)
+        weights = local_resolution_weights.local_resolution_weights(
+          map_data    = mmm.map_data(),
+          unit_cell   = model.crystal_symmetry().unit_cell(),
+          sites_cart  = model.get_sites_cart(),
+          window_edge = self.params.local_resolution.window,
+          power       = self.params.local_resolution.power)
+
+    # 4. Per-atom real-space refinement (tricubic by default).
     print('Refining (gradients_method=%s, max_iterations=%d)' %
       (self.params.gradients_method, self.params.max_iterations),
       file=self.logger)
@@ -78,10 +115,11 @@ How to run:
       map_data         = mmm.map_data(),
       gradients_method = self.params.gradients_method,
       max_iterations   = self.params.max_iterations,
+      weights          = weights,
       log              = self.logger)
     self.model = model
 
-    # 4. Write the refined model, named after the input model as
+    # 5. Write the refined model, named after the input model as
     #    "<model>_rsr.<ext>" (input format preserved). Passing the model object
     #    lets write_model_file keep the input pdb/cif format.
     if self.params.output.file_name is not None:

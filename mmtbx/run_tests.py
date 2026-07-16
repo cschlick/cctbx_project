@@ -271,6 +271,9 @@ general_tests = [
   "$D/refinement/real_space/tst_individual_sites_3.py",
   "$D/refinement/real_space/tst_monitor.py",
   "$D/refinement/real_space/tst_rigid_body.py",
+  "$D/refinement/real_space/tst_rsr_peratom.py",
+  "$D/refinement/real_space/tst_rsr_peratom_weights.py",
+  "$D/refinement/real_space/tst_local_resolution_weights.py",
   "$D/refinement/real_space/tst_weight.py",
   #
   "$D/idealized_aa_residues/tst.py",
