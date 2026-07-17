@@ -1,6 +1,4 @@
 from __future__ import division
-from collections import defaultdict
-import warnings
 
 from libtbx.utils import null_out
 from cctbx.array_family import flex
@@ -8,7 +6,6 @@ from libtbx import easy_mp
 import numpy as np
 import numpy.ma as ma
 from scipy.spatial import KDTree
-import pandas as pd
 
 
 master_phil_str = """
@@ -556,17 +553,18 @@ def calc_qscore(mmm,
   # round sensibly
   q = np.around(q,4)
 
-  # aggregate per residue
+  # aggregate per residue (pandas-free)
   model = model.select(flex.bool(selection_bool))
-  qscore_df = aggregate_qscore_per_residue(model,q,window=3)
-  q = flex.double(q)
-  qscore_per_residue = flex.double(qscore_df["Q-Residue"].values)
+  records = build_qscore_records(model, q)
+  qscore_per_residue = flex.double(list(records["Q-Residue"]))
+  q = flex.double([float(v) for v in q])
 
   # Output
   result = {
     "qscore_per_atom":q,
     "qscore_per_residue":qscore_per_residue,
-    "qscore_dataframe":qscore_df
+    "qscore_records":records,
+    "probe_allocation_method":probe_allocation_method,
     }
 
   if debug:
@@ -613,53 +611,51 @@ def rowwise_corrcoef(A, B, mask=None):
 
 
 
-def aggregate_qscore_per_residue(model,qscore_per_atom,window=3):
-  # assign residue indices to each atom
-
-  atoms = model.get_atoms()
-  df = cctbx_atoms_to_df(atoms)
-  df["Q-score"] = qscore_per_atom
-  df["rg_index"] = df.groupby(["chain_id", "resseq", "resname"]).ngroup()
-  grouped_means = df.groupby(['chain_id', "resseq", "resname", "rg_index"],
-                             as_index=False)['Q-score'].mean().rename(
-                               columns={'Q-score': 'Q-Residue'})
-
-  #grouped_means['RollingMean'] = None  # Initialize column to avoid KeyError
-
-  # Until pandas is updated, need to suppress warning
-  warnings.filterwarnings("ignore", category=FutureWarning)
-  # for chain_id, group in grouped_means.groupby("chain_id"):
-  #   rolling_means = variable_neighbors_rolling_mean(group['Q-Residue'], window)
-  #   grouped_means.loc[group.index, 'RollingMean'] = rolling_means.values
-
-
-
-  # Merge the updated 'Q-Residue' and 'RollingMean' back into the original DataFrame
-  df = df.merge(grouped_means[['rg_index', 'Q-Residue']], on='rg_index', how='left')
-  df.drop("rg_index", axis=1, inplace=True)
-  # df["Q-ResidueRolling"] = df["RollingMean"].astype(float)
-  # df.drop(columns=["RollingMean"],inplace=True)
-  return df
-
-def variable_neighbors_rolling_mean(series, window=3):
+def group_indices_by_residue(records):
   """
-  Aggregate per-atom qscore to per-residue in the same
-    manner as the original mapq program
+  Group atom indices by residue, keyed on (chain_id, resseq, resname), in
+  first-seen order. Pandas-free.
+
+  Params:
+    records (dict): dict-of-columns table from cctbx_atoms_to_records
+
+  Returns:
+    dict[tuple, list[int]]: residue key -> list of atom indices (row indices
+      into every column of `records`)
   """
-  # Container for the rolling means
-  rolling_means = []
+  groups = {}
+  keys = zip(records["chain_id"], records["resseq"], records["resname"])
+  for i, key in enumerate(keys):
+    groups.setdefault(key, []).append(i)
+  return groups
 
-  # Calculate rolling mean for each index
-  for i in range(len(series)):
-    # Determine the start and end indices of the window
-    start_idx = max(0, i - window)
-    end_idx = min(len(series), i + window + 1)
 
-    # Calculate mean for the current window
-    window_mean = series.iloc[start_idx:end_idx].mean()
-    rolling_means.append(window_mean)
+def build_qscore_records(model, qscore_per_atom):
+  """
+  Attach per-atom Q-score and a per-residue mean ("Q-Residue") to the atom
+  table, without pandas. Residues are grouped by (chain_id, resseq, resname);
+  the mean Q over a residue's non-hydrogen atoms is broadcast back to each of
+  its atoms (matching the former pandas groupby-mean behaviour).
 
-  return pd.Series(rolling_means)
+  Params:
+    model: an mmtbx/iotbx model (already hydrogen-stripped and selected)
+    qscore_per_atom: per-atom Q-scores, length == model.get_number_of_atoms()
+
+  Returns:
+    dict: cctbx_atoms_to_records columns plus "Q-score" and "Q-Residue"
+  """
+  records = cctbx_atoms_to_records(model.get_atoms())
+  q = np.asarray([float(v) for v in qscore_per_atom], dtype=float)
+  n = len(records["id"])
+  assert q.shape[0] == n, (
+    "qscore_per_atom length %d != n atoms %d" % (q.shape[0], n))
+  records["Q-score"] = q
+
+  q_residue = np.empty(n, dtype=float)
+  for idxs in group_indices_by_residue(records).values():
+    q_residue[idxs] = float(np.mean(q[idxs]))
+  records["Q-Residue"] = q_residue
+  return records
 
 
 def write_bild_spheres(xyz,filename="sphere.bild",r=0.5):
@@ -681,43 +677,37 @@ def write_bild_spheres(xyz,filename="sphere.bild",r=0.5):
 
 
 
-def cctbx_atoms_to_df(atoms):
+def cctbx_atoms_to_records(atoms):
   """
-  Build a pandas dataframe from a cctbx shared atoms object
+  Build a plain dict-of-columns table from a cctbx shared atoms object.
+  Pandas-free replacement for the former cctbx_atoms_to_df.
 
   Params:
     atoms (iotbx_pdb_hierarchy_ext.af_shared_atom): The atom array
 
   Returns:
-    df_atoms (pd.DataFrame): A pandas dataframe with the core data present
+    dict[str, list | np.ndarray]: parallel columns (length == n atoms):
+      id, model_id, chain_id, resseq, resname, name, element, altloc are
+      lists; x, y, z are float numpy arrays.
   """
-  # Define values composition
-  func_mapper = {
-                        #"model_id", # model
-                        "id":lambda atom: atom.i_seq,
-                        "model_id":lambda atom: atom.parent().parent().parent().parent().id,
-                        "chain_id":lambda atom: atom.parent().parent().parent().id,
-                        "resseq":lambda atom: atom.parent().parent().resseq_as_int(),
-                        "resname":lambda atom: atom.parent().parent().unique_resnames()[0],
-                        "name":lambda atom: atom.name.strip(),
-                        "element":lambda atom: atom.element,
-                        "altloc": lambda atom: atom.parent().altloc
-  }
-
-  # Build as dictionaries
-  data = defaultdict(list)
+  keys = ("id","model_id","chain_id","resseq","resname","name","element","altloc")
+  cols = {k: [] for k in keys}
   for atom in atoms:
-    for key,func in func_mapper.items():
-      data[key].append(func(atom))
+    ag = atom.parent()          # atom_group
+    rg = ag.parent()            # residue_group
+    chain = rg.parent()         # chain
+    model = chain.parent()      # model
+    cols["id"].append(atom.i_seq)
+    cols["model_id"].append(model.id)
+    cols["chain_id"].append(chain.id)
+    cols["resseq"].append(rg.resseq_as_int())
+    cols["resname"].append(rg.unique_resnames()[0])
+    cols["name"].append(atom.name.strip())
+    cols["element"].append(atom.element)
+    cols["altloc"].append(ag.altloc)
 
-
-  # Include values non-composition
   xyz = atoms.extract_xyz().as_numpy_array()
-  data["x"] = xyz[:,0]
-  data["y"] = xyz[:,1]
-  data["z"] = xyz[:,2]
-
-  # Build dataframe from dictionaries
-  df_atoms = pd.DataFrame(data,index=list(range(len(atoms))))
-
-  return df_atoms
+  cols["x"] = xyz[:,0]
+  cols["y"] = xyz[:,1]
+  cols["z"] = xyz[:,2]
+  return cols

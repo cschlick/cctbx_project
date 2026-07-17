@@ -452,6 +452,99 @@ def test_probe_allocation_methods():
   print("OK: test_probe_allocation_methods")
 
 
+def _tst2_files():
+  import os
+  mf = libtbx.env.find_in_repositories(
+    relative_path=\
+      "cctbx_project/iotbx/regression/data/non_zero_origin_model_split.pdb",
+    test=os.path.isfile)
+  xf = libtbx.env.find_in_repositories(
+    relative_path=\
+      "cctbx_project/iotbx/regression/data/non_zero_origin_map.ccp4",
+    test=os.path.isfile)
+  return mf, xf
+
+
+def _tst2_dm():
+  mf, xf = _tst2_files()
+  dm = DataManager()
+  dm.process_model_file(mf)
+  dm.process_real_map_file(xf)
+  return dm
+
+
+def test_pandas_free_records():
+  """
+  calc_qscore output must be pandas-free: a plain dict of parallel columns,
+  labeled with the method used, with Q-Residue equal to the per-residue mean of
+  the atoms' Q-scores. Also assert neither qscore module binds pandas.
+  """
+  import cctbx.maptbx.qscore as qmod
+  import cctbx.programs.qscore as pmod
+  for mod in (qmod, pmod):
+    assert "pd" not in vars(mod) and "pandas" not in vars(mod), (
+      "%s still references pandas" % mod.__name__)
+
+  dm = _tst2_dm()
+  mmm = map_model_manager(model=dm.get_model(), map_manager=dm.get_real_map())
+  shells = [i / 10.0 for i in range(21)]
+  res = calc_qscore(mmm, shells=shells, n_probes=8, nproc=1,
+                    probe_allocation_method="precalculate", log=null_out())
+
+  assert res["probe_allocation_method"] == "precalculate"
+  records = res["qscore_records"]
+  assert isinstance(records, dict), type(records)
+  for col in ("id","chain_id","resseq","resname","altloc",
+              "x","y","z","Q-score","Q-Residue"):
+    assert col in records, "missing column %s" % col
+
+  n = len(records["id"])
+  # every column is parallel, and none is a pandas object
+  for k, v in records.items():
+    assert len(v) == n, (k, len(v), n)
+    assert type(v).__module__ in ("builtins", "numpy"), (k, type(v))
+
+  # Q-Residue is the mean of that residue's per-atom Q-scores
+  q = np.asarray(records["Q-score"], dtype=float)
+  from cctbx.maptbx.qscore import group_indices_by_residue
+  for idxs in group_indices_by_residue(records).values():
+    idxs = np.array(idxs)
+    expected = float(np.mean(q[idxs]))
+    for i in idxs:
+      assert abs(float(records["Q-Residue"][i]) - expected) < 1e-9
+  print("OK: test_pandas_free_records")
+
+
+def test_program_both_methods():
+  """
+  The program template must run end to end with BOTH probe-allocation methods,
+  produce method-labeled JSON with one record per atom, and expose the summary
+  scores -- with no pandas anywhere in the path.
+  """
+  from cctbx.programs.qscore import Program as QscoreProgram
+  import json as _json
+  for method in ("precalculate", "progressive"):
+    dm = _tst2_dm()   # fresh manager per run (run() mutates its model)
+    n_atoms = dm.get_model().get_number_of_atoms()
+    params = phil.parse(QscoreProgram.master_phil_str,
+                        process_includes=True).extract()
+    params.qscore.probe_allocation_method = method
+    params.qscore.nproc = 1
+    task = QscoreProgram(dm, params)
+    task.run()
+    r = task.get_results()
+    assert r.probe_allocation_method == method
+    assert r.q_score_overall is not None
+    js = _json.loads(task.get_results_as_JSON())
+    assert js["probe_allocation_method"] == method
+    assert len(js["flat_results"]) == n_atoms
+    # every JSON value is a native type (no numpy/pandas leakage)
+    for row in js["flat_results"]:
+      for v in row.values():
+        assert type(v).__module__ == "builtins", (method, type(v))
+  print("OK: test_program_both_methods")
+
+
 if (__name__ == "__main__"):
 
 
@@ -463,6 +556,12 @@ if (__name__ == "__main__"):
 
   # test both probe-allocation methods (progressive restored, precalculate kept)
   test_probe_allocation_methods()
+
+  # test pandas-free records + per-residue aggregation
+  test_pandas_free_records()
+
+  # test the program runs end-to-end with both methods
+  test_program_both_methods()
 
 
 
