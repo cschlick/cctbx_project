@@ -94,6 +94,20 @@ class Program(ProgramTemplate):
 
     self.logger.register("log", log, atexit_send_to=None)
 
+    # Name default outputs (e.g. the --json file) after the input model rather
+    # than the generic "cctbx_program" prefix -> "<model>_qscore_000.json"
+    # (falling back to "qscore"). Only set when the standard output scope is
+    # present and the user has not chosen their own prefix.
+    output = getattr(self.params, "output", None)
+    if output is not None and getattr(output, "prefix", None) is None:
+      model_name = self.data_manager.get_default_model_name()
+      if model_name:
+        import os
+        base = os.path.splitext(os.path.basename(model_name))[0]
+        output.prefix = "%s_qscore" % base
+      else:
+        output.prefix = "qscore"
+
     # get initial data
     mmm = self.data_manager.get_map_model_manager()
 
