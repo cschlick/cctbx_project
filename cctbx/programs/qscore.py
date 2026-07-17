@@ -81,6 +81,7 @@ class Program(ProgramTemplate):
         rtol=self.params.qscore.rtol,
         shells=self.shells,
         nproc=self.params.qscore.nproc,
+        probe_allocation_method=self.params.qscore.probe_allocation_method,
         log=self.logger)
 
 
@@ -132,7 +133,7 @@ class Program(ProgramTemplate):
     self._print("----------------------------------------")
     pd.set_option('display.max_rows', 20)
     df.drop(columns=["x","y","z","id","Q-score"],inplace=True)
-    self._print(df.groupby(["model_id","chain_id","resseq","altloc"]).agg("mean"))
+    self._print(df.groupby(["model_id","chain_id","resseq","altloc"]).agg("mean",numeric_only=True))
     self._print("\n\nBy chain:")
     self._print("----------------------------------------")
     self._print(q_chains)

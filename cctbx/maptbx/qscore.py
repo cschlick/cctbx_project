@@ -54,6 +54,12 @@ master_phil_str = """
       .type = float
       .help = Mapq rtol value, the "real" shell radii are r*rtol
 
+    probe_allocation_method = *precalculate progressive
+      .type = choice
+      .help = "Method used to allocate radial probes. progressive is the original method where probes are proposed and rejected iteratively and matches the mapq reference implementation to floating point. precalculate pre-allocates probes and rejects them once; it is much faster but yields slightly different results. Both are retained on purpose."
+      .short_caption = "Probe allocation method (progressive is paper-exact, precalculate is fast)"
+      .expert_level = 1
+
     write_probes = False
       .type = bool
       .help = Write the qscore probes as a .bild file to visualize in Chimera
@@ -108,6 +114,204 @@ def generate_probes_np(sites_cart, rad, n_probes):
   # reshape (n_atoms,n_probes,3)
   probes = probes.swapaxes(0,1)
   return probes
+
+
+def get_probe_mask(
+      atom_tree,
+      probes_xyz,
+      r=None,
+      expected=None,
+      log=null_out(),
+      ):
+  """
+  sites_cart shape  (n_atoms,3)
+  probes_xyz shape (n_atoms,n_probes,3)
+
+  If expected is None, infer atom indices from probes_xyz
+  Else expected should be a single value, or have shape  (n_atoms,n_probes)
+
+  Restored from the pre-ac1fcf3a28 implementation. Note: this is called
+  per-atom by shell_probes_progressive (n_atoms==1), so the `if not expected`
+  falsy-zero path is harmless there (arange(1)==[0]==expected for atom 0).
+  """
+
+  assert r is not None, "Provide a radius"
+  assert probes_xyz.ndim ==3 and probes_xyz.shape[-1] == 3,(
+    "Provide probes_xyz as shape: (n_atoms,n_probes,3)")
+
+  n_atoms_probe,n_probes,_ = probes_xyz.shape
+  dim = probes_xyz.shape[-1] # 3 for cartesian coords
+
+
+  # reshaped_probes shape (n_atoms*n_probes,3)
+  reshaped_probes = probes_xyz.reshape(-1, 3)
+  atom_indices = np.tile(np.arange(n_atoms_probe), (probes_xyz.shape[1], 1)).T
+
+  if not expected:
+    atom_indices = np.tile(np.arange(n_atoms_probe), (probes_xyz.shape[1], 1)).T
+  else:
+    atom_indices = np.full(probes_xyz.shape,expected)
+
+  associated_indices = atom_indices.reshape(-1)
+
+
+  # query
+  # Check if any other tree points are within r of each query point
+  query_points = reshaped_probes
+  other_points_within_r = []
+  for i, (query_point,idx) in enumerate(zip(query_points,associated_indices)):
+
+    indices_within_r = atom_tree.query_ball_point(query_point, r)
+
+    # Exclude the associated point
+    associated_index = associated_indices[i]
+    other_indices = []
+    for  idx in indices_within_r:
+      if idx != associated_index:
+        other_indices.append(idx)
+      if len(indices_within_r)==0:
+        other_indices.append(-1)
+
+
+    print(other_indices,file=log)
+
+    other_points_within_r.append(other_indices)
+
+  # true are points that don't get rejected
+  num_nbrs_other = np.array(
+     [len(inds) for i,inds in enumerate(other_points_within_r)])
+
+  num_nbrs_other = num_nbrs_other.reshape((n_atoms_probe,n_probes))
+  mask = num_nbrs_other==0
+
+  return mask
+
+
+# Slow, paper-exact version (matches mapq to floating point)
+def shell_probes_progressive(
+      sites_cart=None,   # A numpy array of shape (N,3)
+      atoms_tree=None,  # An atom_xyz scipy kdtree
+      selection_bool=None,# Boolean atom selection
+      n_probes=8,       # The desired number of probes per shell (maps to target)
+      RAD=1.5,          # The nominal radius of this shell
+      rtol=0.9,         # Multiplied with RAD to get actual radius
+      log = null_out(),
+      ):
+  """
+  Generate probes progressively for a single shell (radius).
+
+  Restored from the pre-ac1fcf3a28 implementation. The original exposed
+  n_probes_target / n_probes_max / n_probes_min separately; to share the
+  current get_probes/GatherProbes contract (which passes a single n_probes),
+  they are derived here as target=n_probes, max=2*n_probes, min=4. At the
+  historical default n_probes=8 this reproduces the original (8, 16, 4) exactly.
+  """
+  # Derive the original triple from the single shared n_probes kwarg
+  n_probes_target = n_probes
+  n_probes_max = 2 * n_probes
+  n_probes_min = 4
+
+  # Do input validation
+  if not atoms_tree:
+    assert atoms_tree is None, (
+      "If not providing an atom tree, \
+        provide a 2d atom coordinate array to build tree")
+
+    atoms_tree = KDTree(sites_cart)
+
+  # Manage log
+  if log is None:
+    log = null_out()
+
+  # manage selection input
+  if selection_bool is None:
+    selection_bool = np.full(len(sites_cart),True)
+
+  # do selection
+  sites_cart_sel = sites_cart[selection_bool]
+  n_atoms = sites_cart_sel.shape[0]
+
+  all_pts = []  # list of probe arrays for each atom
+  for atom_i in range(n_atoms):
+    coord = sites_cart_sel[atom_i:atom_i+1]
+    outRAD = RAD * rtol
+
+
+    print(coord,file=log)
+    pts = []
+    i_log = []
+    # try to get at least numPts] points at [RAD] distance
+    # from the atom, that are not closer to other atoms
+    N_i = 50
+
+    # If we find the necessary number of probes in the first iteration,
+    #   then i will never go to 1
+    for i in range(0, N_i):
+      rejections = 0
+
+
+
+      # progressively more points are grabbed  with each failed iter
+      n_pts_to_grab = (n_probes_target + i * 2)
+
+      # get the points in shape (n_atoms,n_pts_to_grab,3)
+      outPts = generate_probes_np(coord, RAD, n_pts_to_grab)
+
+      # initialize points to keep
+      at_pts, at_pts_i = [None] * outPts.shape[1], 0
+
+      # mask for outPts, are they are closest to the expected atom
+      # mask shape (n_atoms,n_pts_to_grab)
+      # NOTE: n_atoms != len(outPts)
+
+      # will get mask of shape (n_atoms,n_probes)
+      mask = get_probe_mask(atoms_tree,outPts,r=outRAD,expected=atom_i,log=log)
+
+      # identify which ones to keep, progressively grow pts list
+      for pt_i, pt in enumerate(outPts[0]):
+        keep = mask[0,pt_i] # only one atom TODO: vectorize atoms
+        if keep:
+          at_pts[at_pts_i] = pt
+          at_pts_i += 1
+        else:
+          #print("REJECTING...",pt,file=log)
+          rejections+=1
+          pass
+
+      # check if we have enough points to break the search loop
+      if ( at_pts_i >= n_probes_target):
+        pts.extend(at_pts[0:at_pts_i])
+        pts = pts + [np.array([np.nan,np.nan,np.nan])]*(n_probes_max-len(pts))
+        #print(pts)
+        break
+
+      i_log.append(i)
+      if i>=N_i:
+        assert False, "Too many iterations to get probes"
+      if i>0:
+        print("Going another round..",file=log)
+      # End sampling iteration
+
+
+
+    #Finish working on a single atom
+    pts = np.array(pts)  # should be shape (n_probes,3)
+    if pts.shape == (0,): # all probes clashed, continue with zero probes
+      pts = np.full((n_probes_max,3),np.nan)
+
+    assert pts.shape == (n_probes_max,3),(
+    f"Pts shape must be ({n_probes_max},3), not {pts.shape})")
+
+
+
+    all_pts.append(pts)
+
+
+  # prepare output
+  probe_xyz = np.stack(all_pts)
+  probe_mask = ~(np.isnan(probe_xyz))[:,:,0]
+
+  return probe_xyz, probe_mask
 
 
 ################################################################################
@@ -250,6 +454,7 @@ def calc_qscore(mmm,
                 n_probes=8,
                 rtol=0.9,
                 nproc=1,
+                probe_allocation_method="precalculate",
                 log=null_out(),
                 debug=False):
   """
@@ -276,7 +481,14 @@ def calc_qscore(mmm,
 
 
   # determine worker func
-  worker_func=shell_probes_precalculate
+  if probe_allocation_method == "progressive":
+    worker_func = shell_probes_progressive
+  elif probe_allocation_method == "precalculate":
+    worker_func = shell_probes_precalculate
+  else:
+    raise ValueError(
+      "probe_allocation_method must be 'progressive' or 'precalculate', "
+      "got %r" % probe_allocation_method)
 
 
   # Get probes and probe mask (probes to reject)

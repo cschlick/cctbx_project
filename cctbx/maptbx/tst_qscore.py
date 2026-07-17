@@ -19,6 +19,7 @@ import numpy as np
 from cctbx.maptbx.qscore import (
   generate_probes_np,
   shell_probes_precalculate,
+  shell_probes_progressive,
   calc_qscore,
 
 )
@@ -386,6 +387,71 @@ def test_program_template(test):
   results = task.get_results()
 
 
+def test_probe_allocation_methods():
+  """
+  Both probe-allocation methods must run and give sane, correlated results, and
+  the 'progressive' method must reproduce the historical mapq-faithful reference
+  values (recovered from the pre-ac1fcf3a28 test) to floating point. This guards
+  the restored progressive method against silent drift.
+  """
+  import os
+  model_file = libtbx.env.find_in_repositories(
+    relative_path=\
+      "cctbx_project/iotbx/regression/data/non_zero_origin_model_split.pdb",
+    test=os.path.isfile)
+  map_file = libtbx.env.find_in_repositories(
+    relative_path=\
+      "cctbx_project/iotbx/regression/data/non_zero_origin_map.ccp4",
+    test=os.path.isfile)
+  dm = DataManager()
+  dm.process_model_file(model_file)
+  dm.process_real_map_file(map_file)
+  mmm = map_model_manager(model=dm.get_model(), map_manager=dm.get_real_map())
+
+  shells = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,
+            1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0]
+
+  # Historical progressive reference (n_probes=8; target=8, max=16),
+  # recovered verbatim from the pre-ac1fcf3a28 tst2_progressive_numpy test.
+  progressive_expected = np.array([
+    0.81621,0.79426,0.83739,0.67616,0.75113,0.81278,0.75789,0.75623,0.77865,
+    0.80018,0.83847,0.67525,0.78909,0.81843,0.81285,0.80816,0.89982,0.73878,
+    0.81402,0.79254,0.81353,0.81543,0.64347,0.75470,0.84479,0.80404,0.77552,
+    0.75578,0.80234,0.84508,0.66298,0.76894,0.76924,0.90342,0.78303,0.79723,
+    0.73253,0.83709,0.84759,0.60567,0.75056,0.77734,0.89625,0.85381,0.74985,
+    0.69442,0.80130,0.82290,0.57231,0.70518,0.72775,0.83440,0.82770,0.73152,
+    0.76289,0.84503,0.79984,0.75651,0.79504,0.82964,0.83653,0.83177,0.68769,
+    0.79369,0.83867,0.67165,0.78174,0.85420,0.73200,0.82028,0.73856,0.79636,
+    0.83043,0.69672,0.79881,0.75317,0.78247,0.83621,0.74694,0.81975,0.79633,
+    0.87402,0.74882,0.72080,0.87380,0.74778])
+
+  q = {}
+  for method in ("precalculate", "progressive"):
+    res = calc_qscore(mmm, shells=shells, n_probes=8, nproc=1,
+                      probe_allocation_method=method, log=null_out())
+    q[method] = np.array([float(v) for v in res["qscore_per_atom"]])
+
+  # 1. progressive is faithful to the historical reference
+  assert np.all(isclose_or_nan(q["progressive"], progressive_expected, atol=1e-3)), (
+    "progressive drifted from historical reference:\n%s"
+    % np.abs(q["progressive"] - progressive_expected))
+
+  # 2. the two methods are strongly correlated but not identical -- documenting
+  #    "precalculate is much faster but yields slightly different results"
+  assert q["precalculate"].shape == q["progressive"].shape
+  assert not np.allclose(q["precalculate"], q["progressive"], atol=1e-4), (
+    "the two methods are supposed to differ slightly")
+
+  # 3. an unknown method raises
+  try:
+    calc_qscore(mmm, shells=shells, n_probes=8,
+                probe_allocation_method="nonsense", log=null_out())
+    raise AssertionError("expected ValueError for unknown probe_allocation_method")
+  except ValueError:
+    pass
+  print("OK: test_probe_allocation_methods")
+
+
 if (__name__ == "__main__"):
 
 
@@ -394,6 +460,9 @@ if (__name__ == "__main__"):
 
   # test single shell probe generation
   test_shell_probes()
+
+  # test both probe-allocation methods (progressive restored, precalculate kept)
+  test_probe_allocation_methods()
 
 
 
