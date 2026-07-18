@@ -175,6 +175,9 @@ class Program(ProgramTemplate):
     if self.params.qscore.write_to_bfactor_pdb:
       self.write_to_bfactor_pdb(model,self.result.qscore_per_atom)
 
+    if self.params.qscore.write_qscore_mmcif:
+      self.write_qscore_mmcif(model,self.result.qscore_per_atom)
+
 
   def get_results(self):
     return self.result
@@ -204,6 +207,40 @@ class Program(ProgramTemplate):
 
     with open("qscore_bfactor_field.pdb","w") as fh:
       fh.write(model.model_as_pdb())
+
+  def write_qscore_mmcif(self, model, qscore_per_atom):
+    """
+    Write an mmCIF carrying the per-atom Q-score in a dedicated
+    _atom_site.qscore column (does not overload the B-factor). The column is
+    non-standard, so treat it as a working carrier, not a deposition field.
+    """
+    import iotbx.cif
+
+    # crystal-symmetry block (if any), then the atom_site block -- same pattern
+    # model_as_mmcif uses internally, so the file is complete and valid.
+    cs = model.crystal_symmetry()
+    cif_block = cs.as_cif_block() if cs is not None else None
+
+    hier_block = model.get_hierarchy().as_cif_block()
+    loop = hier_block.get_loop("_atom_site")
+    n = len(loop["_atom_site.id"])
+    assert n == len(qscore_per_atom), (
+      "atom_site rows (%d) != qscore atoms (%d)" % (n, len(qscore_per_atom)))
+    loop.add_columns(
+      {"_atom_site.qscore": ["%.4f" % float(v) for v in qscore_per_atom]})
+    hier_block.add_loop(loop)
+
+    if cif_block is not None:
+      cif_block.update(hier_block)
+    else:
+      cif_block = hier_block
+
+    cif = iotbx.cif.model.cif()
+    cif["qscore"] = cif_block
+    filename = self.get_default_output_filename() + ".cif"
+    with open(filename, "w") as fh:
+      cif.show(out=fh)
+    self._print("Wrote per-atom Q-score mmCIF: %s (_atom_site.qscore)" % filename)
 
   def write_bild_spheres(self):
     # write bild files

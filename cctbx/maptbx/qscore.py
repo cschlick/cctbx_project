@@ -73,6 +73,16 @@ master_phil_str = """
     write_to_bfactor_pdb = False
       .type = bool
       .help = Write out a pdb file with the Q-score per atom in the B-factor field
+
+    write_qscore_mmcif = False
+      .type = bool
+      .help = "Write out an mmCIF file carrying the per-atom Q-score in a "
+              "dedicated _atom_site.qscore column. Unlike write_to_bfactor_pdb "
+              "this does not overload the B-factor, so the real ADP is "
+              "preserved. Note the column is non-standard (not in the PDBx/mmCIF "
+              "dictionary), so strict parsers or a deposition roundtrip may drop "
+              "it; it is a working carrier for analysis, not a deposition field."
+      .short_caption = "Write per-atom Q-score as an _atom_site.qscore mmCIF column"
   }
 
   """

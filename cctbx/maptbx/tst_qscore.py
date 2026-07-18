@@ -585,6 +585,45 @@ def test_report_selection():
   print("OK: test_report_selection")
 
 
+def test_qscore_mmcif_output():
+  """
+  write_qscore_mmcif emits a valid mmCIF with a per-atom _atom_site.qscore
+  column that matches the computed Q-scores, without overloading the B-factor.
+  """
+  import os, tempfile, iotbx.cif
+  from cctbx.programs.qscore import Program as QscoreProgram
+  dm = _tst2_dm()
+  n_atoms = dm.get_model().get_number_of_atoms()
+  params = phil.parse(QscoreProgram.master_phil_str,
+                      process_includes=True).extract()
+  params.qscore.write_qscore_mmcif = True
+  params.qscore.nproc = 1
+
+  cwd = os.getcwd()
+  tmp = tempfile.mkdtemp()
+  try:
+    os.chdir(tmp)
+    task = QscoreProgram(dm, params)
+    task.run()
+    q_expected = [round(float(v), 4)
+                  for v in task.get_results().qscore_per_atom]
+    cif_path = task.get_default_output_filename() + ".cif"
+    assert os.path.isfile(cif_path), "mmCIF not written: %s" % cif_path
+    block = list(iotbx.cif.reader(file_path=cif_path).model().values())[0]
+    assert "_atom_site.qscore" in block, "missing _atom_site.qscore column"
+    q_col = [round(float(v), 4) for v in block["_atom_site.qscore"]]
+    assert len(q_col) == n_atoms, (len(q_col), n_atoms)
+    # column matches the computed per-atom Q-scores
+    for a, b in zip(q_col, q_expected):
+      assert abs(a - b) < 1e-4, (a, b)
+    # B-factor column is NOT the Q-score (not overloaded)
+    b_col = [float(v) for v in block["_atom_site.B_iso_or_equiv"]]
+    assert b_col[:n_atoms] != q_col, "B-factor appears overloaded with Q-score"
+  finally:
+    os.chdir(cwd)
+  print("OK: test_qscore_mmcif_output")
+
+
 if (__name__ == "__main__"):
 
 
@@ -605,6 +644,9 @@ if (__name__ == "__main__"):
 
   # test the selection-localized report
   test_report_selection()
+
+  # test the per-atom mmCIF column output
+  test_qscore_mmcif_output()
 
 
 
