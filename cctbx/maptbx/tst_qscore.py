@@ -545,6 +545,46 @@ def test_program_both_methods():
   print("OK: test_program_both_methods")
 
 
+def _run_program(report_selection):
+  from cctbx.programs.qscore import Program as QscoreProgram
+  dm = _tst2_dm()
+  params = phil.parse(QscoreProgram.master_phil_str,
+                      process_includes=True).extract()
+  params.qscore.report_selection = report_selection
+  params.qscore.nproc = 1
+  task = QscoreProgram(dm, params)
+  task.run()
+  return task.get_results()
+
+
+def test_report_selection():
+  """
+  The report is localized to qscore.report_selection (default 'protein'): the
+  reported selection value is the mean Q over the matching atoms, a subset
+  selection reports fewer atoms, and report_selection=None reports overall only.
+  """
+  # default 'protein' selects atoms and yields a value
+  r = _run_program("protein")
+  assert r.q_score_selection_string == "protein"
+  assert r.q_score_selection is not None
+  assert r.q_score_selection_n > 0
+
+  # a subset selection reports fewer atoms than the whole model
+  # ("name CA" is a strict, non-empty subset for any protein, independent of
+  # this model's residue numbering)
+  r_all = _run_program("all")
+  r_sub = _run_program("name CA")
+  assert 0 < r_sub.q_score_selection_n < r_all.q_score_selection_n
+  # and its localized value is the mean Q over just those atoms
+  assert r_sub.q_score_selection is not None
+
+  # None -> overall only, no localized value
+  r_none = _run_program(None)
+  assert r_none.q_score_selection is None
+  assert r_none.q_score_overall is not None
+  print("OK: test_report_selection")
+
+
 if (__name__ == "__main__"):
 
 
@@ -562,6 +602,9 @@ if (__name__ == "__main__"):
 
   # test the program runs end-to-end with both methods
   test_program_both_methods()
+
+  # test the selection-localized report
+  test_report_selection()
 
 
 

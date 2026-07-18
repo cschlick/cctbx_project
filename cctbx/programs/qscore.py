@@ -7,7 +7,6 @@ from libtbx.program_template import ProgramTemplate
 from libtbx import group_args
 from cctbx.maptbx.qscore import (
     calc_qscore,
-    group_indices_by_residue,
     write_bild_spheres,
 )
 from libtbx.utils import Sorry
@@ -17,35 +16,10 @@ import numpy as np
 
 
 def _fmt(v, nd=2):
-  """Format a scalar for a text table; None/NaN render as '--'."""
+  """Format a scalar Q-score; None/NaN render as '--'."""
   if v is None or (isinstance(v, float) and np.isnan(v)):
     return "--"
   return ("%%.%df" % nd) % float(v)
-
-
-def _safe_mean(values):
-  """Mean of a possibly-empty array; empty -> NaN."""
-  a = np.asarray(values, dtype=float)
-  return float(np.mean(a)) if a.size else float("nan")
-
-
-def _format_table(headers, rows):
-  """Render an aligned fixed-width text table (pandas-free)."""
-  cells = [[str(h) for h in headers]] + [[str(c) for c in r] for r in rows]
-  widths = [max(len(row[i]) for row in cells) for i in range(len(headers))]
-  out = []
-  for r_i, row in enumerate(cells):
-    out.append("  ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
-    if r_i == 0:
-      out.append("  ".join("-" * widths[i] for i in range(len(headers))))
-  return "\n".join(out)
-
-
-def _group_indices_by_chain(records):
-  groups = {}
-  for i, c in enumerate(records["chain_id"]):
-    groups.setdefault(c, []).append(i)
-  return groups
 
 
 class Program(ProgramTemplate):
@@ -158,58 +132,41 @@ class Program(ProgramTemplate):
     assert model.get_number_of_atoms() == len(records["id"])
 
     q = self.result.qscore_per_atom            # flex.double, per atom
-    q_np = np.array([float(v) for v in q])
+    n_all = len(records["id"])
+    q_all = round(flex.mean(q), 2) if n_all > 0 else None
 
-    # main-chain / side-chain per-atom masks (aligned with records order)
-    sel_mc = model.selection(
-      "protein and (name C or name N or name CA or name O or name CB)")
-    mc = sel_mc.as_numpy_array()
-    sc = ~mc
+    # Localized report: mean Q over a cctbx selection (default 'protein').
+    # This is the only granularity in the report -- one flexible, user-driven
+    # number rather than fixed main-chain/side-chain/per-residue tables.
+    report_selection = self.params.qscore.report_selection
+    q_sel = None
+    n_sel = 0
+    if report_selection:
+      try:
+        sel = model.selection(report_selection)
+      except Exception as e:
+        raise Sorry("Invalid report_selection '%s': %s" % (report_selection, e))
+      n_sel = sel.count(True)
+      if n_sel > 0:
+        q_sel = round(flex.mean(q.select(sel)), 2)
 
-    q_mc = round(flex.mean(q.select(sel_mc)), 2) if sel_mc.count(True) > 0 else None
-    q_sc = round(flex.mean(q.select(~sel_mc)), 2) if (~sel_mc).count(True) > 0 else None
-    q_all = round(flex.mean(q), 2)
-
-    # ---- report (pandas-free, labeled with the method used) ----
+    # ---- report (labeled with the method used) ----
     self._print("\nFinished running.\n")
     self._print("Q-score results  [probe allocation method: %s]" % method)
-
-    self._print("\nBy residue:")
-    res_rows = []
-    for idxs in group_indices_by_residue(records).values():
-      i0 = idxs[0]
-      idxs = np.array(idxs)
-      res_rows.append([
-        records["chain_id"][i0],
-        records["resseq"][i0],
-        records["resname"][i0],
-        _fmt(records["Q-Residue"][i0]),
-        _fmt(_safe_mean(q_np[idxs[mc[idxs]]])),
-        _fmt(_safe_mean(q_np[idxs[sc[idxs]]])),
-      ])
-    self._print(_format_table(
-      ["chain", "resseq", "resname", "Q-Residue", "Main Chain", "Side Chain"],
-      res_rows))
-
-    self._print("\nBy chain:")
-    chain_rows = []
-    chain_means = {}
-    for chain_id, idxs in _group_indices_by_chain(records).items():
-      m = float(np.mean(q_np[np.array(idxs)]))
-      chain_means[chain_id] = round(m, 2)
-      chain_rows.append([chain_id, len(idxs), _fmt(m)])
-    self._print(_format_table(["chain", "N atoms", "Q-mean"], chain_rows))
-
-    self._print("\nOverall:")
-    self._print(_format_table(
-      ["Main Chain", "Side Chain", "Overall"],
-      [[_fmt(q_mc), _fmt(q_sc), _fmt(q_all)]]))
+    self._print("  Q-score, all atoms : %s  (N = %d)" % (_fmt(q_all), n_all))
+    if report_selection:
+      if n_sel > 0:
+        self._print("  Q-score, selection '%s' : %s  (N = %d)"
+                    % (report_selection, _fmt(q_sel), n_sel))
+      else:
+        self._print("  Q-score, selection '%s' : no atoms matched"
+                    % report_selection)
 
     # store in results
-    self.result.q_score_chain_means = chain_means
-    self.result.q_score_side_chain = q_sc
-    self.result.q_score_main_chain = q_mc
     self.result.q_score_overall = q_all
+    self.result.q_score_selection = q_sel
+    self.result.q_score_selection_string = report_selection
+    self.result.q_score_selection_n = n_sel
 
     # write out
     if self.params.qscore.write_probes:

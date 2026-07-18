@@ -29,6 +29,15 @@ master_phil_str = """
       .short_caption = Only test atoms within this selection
       .expert_level = 1
 
+    report_selection = "protein"
+      .type = str
+      .help = "Localize the reported Q-score to this cctbx atom selection. The "
+              "reported value is the mean Q-score over the matching atoms. This "
+              "is the minimal way to localize the result; pass any selection "
+              "string, e.g. 'chain A and resseq 50:80'. Set to None to report "
+              "only the overall value."
+      .short_caption = "Selection to localize the reported Q-score"
+
     shell_radius_start = 0.1
       .type = float
       .help = Start testing density at this radius from atom
@@ -170,8 +179,6 @@ def get_probe_mask(
         other_indices.append(-1)
 
 
-    print(other_indices,file=log)
-
     other_points_within_r.append(other_indices)
 
   # true are points that don't get rejected
@@ -233,8 +240,6 @@ def shell_probes_progressive(
     coord = sites_cart_sel[atom_i:atom_i+1]
     outRAD = RAD * rtol
 
-
-    print(coord,file=log)
     pts = []
     i_log = []
     # try to get at least numPts] points at [RAD] distance
@@ -285,8 +290,6 @@ def shell_probes_progressive(
       i_log.append(i)
       if i>=N_i:
         assert False, "Too many iterations to get probes"
-      if i>0:
-        print("Going another round..",file=log)
       # End sampling iteration
 
 
