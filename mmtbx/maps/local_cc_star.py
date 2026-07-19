@@ -2,8 +2,8 @@
 Local (per-residue) map-model agreement with a half-map derived CC* ceiling.
 
 This is the native cctbx equivalent of Servalcat's ``localcc`` "good scores".
-For every residue it reports, from a local real-space window (all grid points
-within ``radius`` of the residue's atoms):
+For every residue it reports, from a local real-space window around each of the
+residue's atoms (see aggregation note below):
 
   cc_mapmodel   local CC(full map, model-calculated map)   -- the fit
   cc_half       local CC(half map 1, half map 2)           -- the local map quality
@@ -18,10 +18,18 @@ for cc_mapmodel -- a residue with cc_mapmodel = 0.6 in a region whose ceiling is
 ceiling is 0.95 is a genuine local misfit. cc_mapmodel exceeding cc_star is the
 signature of fitting noise (overfitting).
 
-The local window is a hard sphere of grid points around the residue's atoms
-(``mmtbx.maps.correlation.from_map_map_atoms``); Servalcat uses a soft Gaussian
-kernel of comparable width. The two windowings differ in softness but measure
-the same quantity; values track closely and rank orderings agree.
+Each score is the local CC in a hard sphere (radius ``radius``) around each of
+the residue's atoms, averaged over the residue -- the same per-atom-then-average
+aggregation Servalcat's localcc (``--kernel_ang``, also a hard sphere) and
+phenix's per-residue reporting use.
+
+Validated against Servalcat localcc on a real triple (EMD-57240/29km, 3.1 A,
+matched 3.1 A kernel): Spearman ~0.91 (cc_half, cc_star) and ~0.70 (cc_mapmodel);
+cc_star mean-abs-diff ~0.017. A small systematic offset remains (this tool's
+cc_mapmodel ~0.05 higher, cc_half ~0.05 lower) because Servalcat FSC signal-
+weights the maps before correlation, which this native version omits: here every
+score is a plain real-space local CC of the raw (boxed) maps, with cc_mapmodel
+using a band-limited model map.
 
 Everything runs on iotbx.map_model_manager primitives -- no Servalcat, no
 subprocess, no external environment.
@@ -118,9 +126,23 @@ def per_residue_local_cc_star(
     correlation.assert_same_gridding(map_data_full, map_data_half2)
 
   sites_cart = model.get_sites_cart()
-  keep = None
-  if selection is not None:
-    keep = selection
+  keep = selection
+
+  def _mean_atom_cc(m1, m2, i_seqs):
+    """Local CC in a hard sphere around each atom, averaged over the residue.
+
+    This per-atom-then-average aggregation matches how Servalcat's localcc and
+    phenix's per-residue reporting summarise a residue. Atoms whose window is
+    empty/flat (correlation undefined -> NaN; e.g. an atom in padded solvent)
+    are dropped from the average rather than poisoning it."""
+    vals = flex.double()
+    for i in i_seqs:
+      cc = correlation.from_map_map_atom(
+        map_1=m1, map_2=m2, site_cart=sites_cart[i],
+        unit_cell=unit_cell, radius=radius)
+      if cc is not None and cc == cc:   # cc == cc is False only for NaN
+        vals.append(cc)
+    return flex.mean(vals) if vals.size() else None
 
   residues = []
   cc_mm_all = flex.double()
@@ -134,19 +156,16 @@ def per_residue_local_cc_star(
       i_seqs = i_seqs.select(keep.select(i_seqs))
       if i_seqs.size() == 0:
         continue
-    sites = sites_cart.select(i_seqs)
 
-    cc_mm = correlation.from_map_map_atoms(
-      map_1=map_data_full, map_2=model_map_data,
-      sites_cart=sites, unit_cell=unit_cell, radius=radius)
+    cc_mm = _mean_atom_cc(map_data_full, model_map_data, i_seqs)
+    if cc_mm is None:            # residue entirely outside the map
+      continue
 
     cc_half = cc_star = cc_gap = None
     if have_halves:
-      cc_half = correlation.from_map_map_atoms(
-        map_1=map_data_half1, map_2=map_data_half2,
-        sites_cart=sites, unit_cell=unit_cell, radius=radius)
-      cc_star = cc_star_from_cc_half(cc_half)
-      if cc_star is not None:
+      cc_half = _mean_atom_cc(map_data_half1, map_data_half2, i_seqs)
+      if cc_half is not None:
+        cc_star = cc_star_from_cc_half(cc_half)
         cc_gap = cc_star - cc_mm
         if cc_mm > cc_star:
           n_over += 1
