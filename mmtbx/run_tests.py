@@ -383,6 +383,7 @@ general_tests = [
   "$D/regression/tst_polder_box.py",
   "$D/regression/tst_polder_ccs.py",
   "$D/regression/tst_map_model_cc.py",
+  "$D/regression/tst_local_cc_star.py",
   "$D/regression/tst_model_map.py",
   #
   "$D/regression/tst_validate_ligands.py",
