@@ -624,6 +624,52 @@ def test_qscore_mmcif_output():
   print("OK: test_qscore_mmcif_output")
 
 
+def test_selection():
+  """
+  qscore.selection -- the compute-time atom selection passed to calc_qscore, not
+  the display-only report_selection -- must, for BOTH allocation methods:
+    (a) not crash, and
+    (b) leave every scored atom's Q identical to its value in a full-model run.
+
+  Regression for two selection-path bugs (both silent until a selection is used,
+  because the code paths coincide when nothing is selected): calc_qscore crashed
+  on flex.bool.sum(), and the probe-rejection step compared the atoms-tree's
+  full-array atom index against a selection-local index (0..n_sel-1), rejecting
+  every probe -> Q=0 for every atom. 'name CA' is used deliberately: its atoms
+  are scattered through the full atom array, so the selection-local and
+  full-array index spaces differ -- the exact trigger for the second bug.
+  """
+  dm = _tst2_dm()
+  shells = [round(0.1 * i, 1) for i in range(21)]
+  selstr = "name CA"
+  for method in ("precalculate", "progressive"):
+    mmm = map_model_manager(model=dm.get_model(), map_manager=dm.get_real_map())
+    full = calc_qscore(mmm, shells=shells, n_probes=8, nproc=1,
+                       probe_allocation_method=method, log=null_out())
+    q_full = np.array([float(v) for v in full["qscore_per_atom"]])
+
+    # selection over the same (now H-removed) model calc_qscore scored
+    selb = mmm.model().selection(selstr).as_numpy_array()
+    sel_full_idx = np.where(selb)[0]
+    assert sel_full_idx.size > 1, "test needs a multi-atom subset"
+    assert not np.array_equal(sel_full_idx, np.arange(sel_full_idx.size)), \
+      "subset must not be a leading run, else it cannot expose the index bug"
+
+    sel = calc_qscore(mmm, selection=selstr, shells=shells, n_probes=8, nproc=1,
+                      probe_allocation_method=method, log=null_out())
+    q_sel = np.array([float(v) for v in sel["qscore_per_atom"]])
+
+    # (a) not the degenerate all-probes-rejected result
+    assert np.nanmax(q_sel) > 0.1, \
+      "%s: qscore ~0 for all selected atoms (probe-rejection index bug)" % method
+    # (b) selection only restricts WHICH atoms are scored; values are unchanged
+    assert q_sel.shape[0] == sel_full_idx.size, (q_sel.shape[0], sel_full_idx.size)
+    assert np.all(isclose_or_nan(q_sel, q_full[selb], atol=1e-6)), (
+      "%s: per-atom Q changed under selection (max |diff| %.2g)"
+      % (method, float(np.nanmax(np.abs(q_sel - q_full[selb])))))
+  print("OK: test_selection")
+
+
 if (__name__ == "__main__"):
 
 
@@ -644,6 +690,9 @@ if (__name__ == "__main__"):
 
   # test the selection-localized report
   test_report_selection()
+
+  # test the compute-time atom selection (both allocation methods)
+  test_selection()
 
   # test the per-atom mmCIF column output
   test_qscore_mmcif_output()
