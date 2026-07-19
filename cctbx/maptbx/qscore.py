@@ -240,6 +240,12 @@ def shell_probes_progressive(
   # manage selection input
   if selection_bool is None:
     selection_bool = np.full(len(sites_cart),True)
+  selection_bool = np.asarray(selection_bool, dtype=bool)
+
+  # Full-array indices of the selected atoms. The loop index below is
+  # selection-local, but atoms_tree is over ALL atoms, so get_probe_mask must be
+  # told the parent's full index sel_indices[atom_i] to exclude it correctly.
+  sel_indices = np.where(selection_bool)[0]
 
   # do selection
   sites_cart_sel = sites_cart[selection_bool]
@@ -277,7 +283,7 @@ def shell_probes_progressive(
       # NOTE: n_atoms != len(outPts)
 
       # will get mask of shape (n_atoms,n_probes)
-      mask = get_probe_mask(atoms_tree,outPts,r=outRAD,expected=atom_i,log=log)
+      mask = get_probe_mask(atoms_tree,outPts,r=outRAD,expected=int(sel_indices[atom_i]),log=log)
 
       # identify which ones to keep, progressively grow pts list
       for pt_i, pt in enumerate(outPts[0]):
@@ -412,7 +418,12 @@ def shell_probes_precalculate(
   # manage selection input
   if selection_bool is None:
     selection_bool = np.full(len(sites_cart),True)
+  selection_bool = np.asarray(selection_bool, dtype=bool)
 
+  # Full-array indices of the selected atoms. Probes (and the rows below) are
+  # built in selected order, but atoms_tree is over ALL atoms, so the parent
+  # atom of the i-th selected atom is at full index sel_indices[i], not i.
+  sel_indices = np.where(selection_bool)[0]
 
   # do selection
   sites_cart_sel = sites_cart[selection_bool]
@@ -431,7 +442,8 @@ def shell_probes_precalculate(
   atom_indices = atom_indices.reshape((n_atoms,n_probes,2))
 
   # Build an index array that would be expected if each probe is near "its" atom
-  row_indices = np.arange(n_atoms)[:, np.newaxis]
+  # (the parent atom's index in the full atom array that atoms_tree was built on)
+  row_indices = sel_indices[:, np.newaxis]
 
   # Mask for whether each probe's nearest atom is the one expected
   expected_atom_mask = atom_indices[:,:,0]==row_indices
@@ -483,7 +495,7 @@ def calc_qscore(mmm,
   # do selection
   if selection != None:
     selection_bool = mmm.model().selection(selection) # boolean
-    if selection_bool.sum() ==0:
+    if selection_bool.count(True) ==0:
       print("Finished... nothing selected",file=log)
       return {"qscore_per_atom":None}
   else:
