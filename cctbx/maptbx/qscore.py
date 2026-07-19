@@ -1,6 +1,4 @@
 from __future__ import division
-from collections import defaultdict
-import warnings
 
 from libtbx.utils import null_out
 from cctbx.array_family import flex
@@ -8,7 +6,6 @@ from libtbx import easy_mp
 import numpy as np
 import numpy.ma as ma
 from scipy.spatial import KDTree
-import pandas as pd
 
 
 master_phil_str = """
@@ -32,6 +29,15 @@ master_phil_str = """
       .short_caption = Only test atoms within this selection
       .expert_level = 1
 
+    report_selection = "protein"
+      .type = str
+      .help = "Localize the reported Q-score to this cctbx atom selection. The "
+              "reported value is the mean Q-score over the matching atoms. This "
+              "is the minimal way to localize the result; pass any selection "
+              "string, e.g. 'chain A and resseq 50:80'. Set to None to report "
+              "only the overall value."
+      .short_caption = "Selection to localize the reported Q-score"
+
     shell_radius_start = 0.1
       .type = float
       .help = Start testing density at this radius from atom
@@ -54,6 +60,12 @@ master_phil_str = """
       .type = float
       .help = Mapq rtol value, the "real" shell radii are r*rtol
 
+    probe_allocation_method = *precalculate progressive
+      .type = choice
+      .help = "Method used to allocate radial probes. progressive is the original method where probes are proposed and rejected iteratively and matches the mapq reference implementation to floating point. precalculate pre-allocates probes and rejects them once; it is much faster but yields slightly different results. Both are retained on purpose."
+      .short_caption = "Probe allocation method (progressive is paper-exact, precalculate is fast)"
+      .expert_level = 1
+
     write_probes = False
       .type = bool
       .help = Write the qscore probes as a .bild file to visualize in Chimera
@@ -61,6 +73,16 @@ master_phil_str = """
     write_to_bfactor_pdb = False
       .type = bool
       .help = Write out a pdb file with the Q-score per atom in the B-factor field
+
+    write_qscore_mmcif = False
+      .type = bool
+      .help = "Write out an mmCIF file carrying the per-atom Q-score in a "
+              "dedicated _atom_site.qscore column. Unlike write_to_bfactor_pdb "
+              "this does not overload the B-factor, so the real ADP is "
+              "preserved. Note the column is non-standard (not in the PDBx/mmCIF "
+              "dictionary), so strict parsers or a deposition roundtrip may drop "
+              "it; it is a working carrier for analysis, not a deposition field."
+      .short_caption = "Write per-atom Q-score as an _atom_site.qscore mmCIF column"
   }
 
   """
@@ -108,6 +130,198 @@ def generate_probes_np(sites_cart, rad, n_probes):
   # reshape (n_atoms,n_probes,3)
   probes = probes.swapaxes(0,1)
   return probes
+
+
+def get_probe_mask(
+      atom_tree,
+      probes_xyz,
+      r=None,
+      expected=None,
+      log=null_out(),
+      ):
+  """
+  sites_cart shape  (n_atoms,3)
+  probes_xyz shape (n_atoms,n_probes,3)
+
+  If expected is None, infer atom indices from probes_xyz
+  Else expected should be a single value, or have shape  (n_atoms,n_probes)
+
+  Restored from the pre-ac1fcf3a28 implementation. Note: this is called
+  per-atom by shell_probes_progressive (n_atoms==1), so the `if not expected`
+  falsy-zero path is harmless there (arange(1)==[0]==expected for atom 0).
+  """
+
+  assert r is not None, "Provide a radius"
+  assert probes_xyz.ndim ==3 and probes_xyz.shape[-1] == 3,(
+    "Provide probes_xyz as shape: (n_atoms,n_probes,3)")
+
+  n_atoms_probe,n_probes,_ = probes_xyz.shape
+  dim = probes_xyz.shape[-1] # 3 for cartesian coords
+
+
+  # reshaped_probes shape (n_atoms*n_probes,3)
+  reshaped_probes = probes_xyz.reshape(-1, 3)
+  atom_indices = np.tile(np.arange(n_atoms_probe), (probes_xyz.shape[1], 1)).T
+
+  if not expected:
+    atom_indices = np.tile(np.arange(n_atoms_probe), (probes_xyz.shape[1], 1)).T
+  else:
+    atom_indices = np.full(probes_xyz.shape,expected)
+
+  associated_indices = atom_indices.reshape(-1)
+
+
+  # query
+  # Check if any other tree points are within r of each query point
+  query_points = reshaped_probes
+  other_points_within_r = []
+  for i, (query_point,idx) in enumerate(zip(query_points,associated_indices)):
+
+    indices_within_r = atom_tree.query_ball_point(query_point, r)
+
+    # Exclude the associated point
+    associated_index = associated_indices[i]
+    other_indices = []
+    for  idx in indices_within_r:
+      if idx != associated_index:
+        other_indices.append(idx)
+      if len(indices_within_r)==0:
+        other_indices.append(-1)
+
+
+    other_points_within_r.append(other_indices)
+
+  # true are points that don't get rejected
+  num_nbrs_other = np.array(
+     [len(inds) for i,inds in enumerate(other_points_within_r)])
+
+  num_nbrs_other = num_nbrs_other.reshape((n_atoms_probe,n_probes))
+  mask = num_nbrs_other==0
+
+  return mask
+
+
+# Slow, paper-exact version (matches mapq to floating point)
+def shell_probes_progressive(
+      sites_cart=None,   # A numpy array of shape (N,3)
+      atoms_tree=None,  # An atom_xyz scipy kdtree
+      selection_bool=None,# Boolean atom selection
+      n_probes=8,       # The desired number of probes per shell (maps to target)
+      RAD=1.5,          # The nominal radius of this shell
+      rtol=0.9,         # Multiplied with RAD to get actual radius
+      log = null_out(),
+      ):
+  """
+  Generate probes progressively for a single shell (radius).
+
+  Restored from the pre-ac1fcf3a28 implementation. The original exposed
+  n_probes_target / n_probes_max / n_probes_min separately; to share the
+  current get_probes/GatherProbes contract (which passes a single n_probes),
+  they are derived here as target=n_probes, max=2*n_probes, min=4. At the
+  historical default n_probes=8 this reproduces the original (8, 16, 4) exactly.
+  """
+  # Derive the original triple from the single shared n_probes kwarg
+  n_probes_target = n_probes
+  n_probes_max = 2 * n_probes
+  n_probes_min = 4
+
+  # Do input validation
+  if not atoms_tree:
+    assert atoms_tree is None, (
+      "If not providing an atom tree, \
+        provide a 2d atom coordinate array to build tree")
+
+    atoms_tree = KDTree(sites_cart)
+
+  # Manage log
+  if log is None:
+    log = null_out()
+
+  # manage selection input
+  if selection_bool is None:
+    selection_bool = np.full(len(sites_cart),True)
+
+  # do selection
+  sites_cart_sel = sites_cart[selection_bool]
+  n_atoms = sites_cart_sel.shape[0]
+
+  all_pts = []  # list of probe arrays for each atom
+  for atom_i in range(n_atoms):
+    coord = sites_cart_sel[atom_i:atom_i+1]
+    outRAD = RAD * rtol
+
+    pts = []
+    i_log = []
+    # try to get at least numPts] points at [RAD] distance
+    # from the atom, that are not closer to other atoms
+    N_i = 50
+
+    # If we find the necessary number of probes in the first iteration,
+    #   then i will never go to 1
+    for i in range(0, N_i):
+      rejections = 0
+
+
+
+      # progressively more points are grabbed  with each failed iter
+      n_pts_to_grab = (n_probes_target + i * 2)
+
+      # get the points in shape (n_atoms,n_pts_to_grab,3)
+      outPts = generate_probes_np(coord, RAD, n_pts_to_grab)
+
+      # initialize points to keep
+      at_pts, at_pts_i = [None] * outPts.shape[1], 0
+
+      # mask for outPts, are they are closest to the expected atom
+      # mask shape (n_atoms,n_pts_to_grab)
+      # NOTE: n_atoms != len(outPts)
+
+      # will get mask of shape (n_atoms,n_probes)
+      mask = get_probe_mask(atoms_tree,outPts,r=outRAD,expected=atom_i,log=log)
+
+      # identify which ones to keep, progressively grow pts list
+      for pt_i, pt in enumerate(outPts[0]):
+        keep = mask[0,pt_i] # only one atom TODO: vectorize atoms
+        if keep:
+          at_pts[at_pts_i] = pt
+          at_pts_i += 1
+        else:
+          #print("REJECTING...",pt,file=log)
+          rejections+=1
+          pass
+
+      # check if we have enough points to break the search loop
+      if ( at_pts_i >= n_probes_target):
+        pts.extend(at_pts[0:at_pts_i])
+        pts = pts + [np.array([np.nan,np.nan,np.nan])]*(n_probes_max-len(pts))
+        #print(pts)
+        break
+
+      i_log.append(i)
+      if i>=N_i:
+        assert False, "Too many iterations to get probes"
+      # End sampling iteration
+
+
+
+    #Finish working on a single atom
+    pts = np.array(pts)  # should be shape (n_probes,3)
+    if pts.shape == (0,): # all probes clashed, continue with zero probes
+      pts = np.full((n_probes_max,3),np.nan)
+
+    assert pts.shape == (n_probes_max,3),(
+    f"Pts shape must be ({n_probes_max},3), not {pts.shape})")
+
+
+
+    all_pts.append(pts)
+
+
+  # prepare output
+  probe_xyz = np.stack(all_pts)
+  probe_mask = ~(np.isnan(probe_xyz))[:,:,0]
+
+  return probe_xyz, probe_mask
 
 
 ################################################################################
@@ -250,6 +464,7 @@ def calc_qscore(mmm,
                 n_probes=8,
                 rtol=0.9,
                 nproc=1,
+                probe_allocation_method="precalculate",
                 log=null_out(),
                 debug=False):
   """
@@ -276,7 +491,14 @@ def calc_qscore(mmm,
 
 
   # determine worker func
-  worker_func=shell_probes_precalculate
+  if probe_allocation_method == "progressive":
+    worker_func = shell_probes_progressive
+  elif probe_allocation_method == "precalculate":
+    worker_func = shell_probes_precalculate
+  else:
+    raise ValueError(
+      "probe_allocation_method must be 'progressive' or 'precalculate', "
+      "got %r" % probe_allocation_method)
 
 
   # Get probes and probe mask (probes to reject)
@@ -344,17 +566,18 @@ def calc_qscore(mmm,
   # round sensibly
   q = np.around(q,4)
 
-  # aggregate per residue
+  # aggregate per residue (pandas-free)
   model = model.select(flex.bool(selection_bool))
-  qscore_df = aggregate_qscore_per_residue(model,q,window=3)
-  q = flex.double(q)
-  qscore_per_residue = flex.double(qscore_df["Q-Residue"].values)
+  records = build_qscore_records(model, q)
+  qscore_per_residue = flex.double(list(records["Q-Residue"]))
+  q = flex.double([float(v) for v in q])
 
   # Output
   result = {
     "qscore_per_atom":q,
     "qscore_per_residue":qscore_per_residue,
-    "qscore_dataframe":qscore_df
+    "qscore_records":records,
+    "probe_allocation_method":probe_allocation_method,
     }
 
   if debug:
@@ -401,53 +624,51 @@ def rowwise_corrcoef(A, B, mask=None):
 
 
 
-def aggregate_qscore_per_residue(model,qscore_per_atom,window=3):
-  # assign residue indices to each atom
-
-  atoms = model.get_atoms()
-  df = cctbx_atoms_to_df(atoms)
-  df["Q-score"] = qscore_per_atom
-  df["rg_index"] = df.groupby(["chain_id", "resseq", "resname"]).ngroup()
-  grouped_means = df.groupby(['chain_id', "resseq", "resname", "rg_index"],
-                             as_index=False)['Q-score'].mean().rename(
-                               columns={'Q-score': 'Q-Residue'})
-
-  #grouped_means['RollingMean'] = None  # Initialize column to avoid KeyError
-
-  # Until pandas is updated, need to suppress warning
-  warnings.filterwarnings("ignore", category=FutureWarning)
-  # for chain_id, group in grouped_means.groupby("chain_id"):
-  #   rolling_means = variable_neighbors_rolling_mean(group['Q-Residue'], window)
-  #   grouped_means.loc[group.index, 'RollingMean'] = rolling_means.values
-
-
-
-  # Merge the updated 'Q-Residue' and 'RollingMean' back into the original DataFrame
-  df = df.merge(grouped_means[['rg_index', 'Q-Residue']], on='rg_index', how='left')
-  df.drop("rg_index", axis=1, inplace=True)
-  # df["Q-ResidueRolling"] = df["RollingMean"].astype(float)
-  # df.drop(columns=["RollingMean"],inplace=True)
-  return df
-
-def variable_neighbors_rolling_mean(series, window=3):
+def group_indices_by_residue(records):
   """
-  Aggregate per-atom qscore to per-residue in the same
-    manner as the original mapq program
+  Group atom indices by residue, keyed on (chain_id, resseq, resname), in
+  first-seen order. Pandas-free.
+
+  Params:
+    records (dict): dict-of-columns table from cctbx_atoms_to_records
+
+  Returns:
+    dict[tuple, list[int]]: residue key -> list of atom indices (row indices
+      into every column of `records`)
   """
-  # Container for the rolling means
-  rolling_means = []
+  groups = {}
+  keys = zip(records["chain_id"], records["resseq"], records["resname"])
+  for i, key in enumerate(keys):
+    groups.setdefault(key, []).append(i)
+  return groups
 
-  # Calculate rolling mean for each index
-  for i in range(len(series)):
-    # Determine the start and end indices of the window
-    start_idx = max(0, i - window)
-    end_idx = min(len(series), i + window + 1)
 
-    # Calculate mean for the current window
-    window_mean = series.iloc[start_idx:end_idx].mean()
-    rolling_means.append(window_mean)
+def build_qscore_records(model, qscore_per_atom):
+  """
+  Attach per-atom Q-score and a per-residue mean ("Q-Residue") to the atom
+  table, without pandas. Residues are grouped by (chain_id, resseq, resname);
+  the mean Q over a residue's non-hydrogen atoms is broadcast back to each of
+  its atoms (matching the former pandas groupby-mean behaviour).
 
-  return pd.Series(rolling_means)
+  Params:
+    model: an mmtbx/iotbx model (already hydrogen-stripped and selected)
+    qscore_per_atom: per-atom Q-scores, length == model.get_number_of_atoms()
+
+  Returns:
+    dict: cctbx_atoms_to_records columns plus "Q-score" and "Q-Residue"
+  """
+  records = cctbx_atoms_to_records(model.get_atoms())
+  q = np.asarray([float(v) for v in qscore_per_atom], dtype=float)
+  n = len(records["id"])
+  assert q.shape[0] == n, (
+    "qscore_per_atom length %d != n atoms %d" % (q.shape[0], n))
+  records["Q-score"] = q
+
+  q_residue = np.empty(n, dtype=float)
+  for idxs in group_indices_by_residue(records).values():
+    q_residue[idxs] = float(np.mean(q[idxs]))
+  records["Q-Residue"] = q_residue
+  return records
 
 
 def write_bild_spheres(xyz,filename="sphere.bild",r=0.5):
@@ -469,43 +690,37 @@ def write_bild_spheres(xyz,filename="sphere.bild",r=0.5):
 
 
 
-def cctbx_atoms_to_df(atoms):
+def cctbx_atoms_to_records(atoms):
   """
-  Build a pandas dataframe from a cctbx shared atoms object
+  Build a plain dict-of-columns table from a cctbx shared atoms object.
+  Pandas-free replacement for the former cctbx_atoms_to_df.
 
   Params:
     atoms (iotbx_pdb_hierarchy_ext.af_shared_atom): The atom array
 
   Returns:
-    df_atoms (pd.DataFrame): A pandas dataframe with the core data present
+    dict[str, list | np.ndarray]: parallel columns (length == n atoms):
+      id, model_id, chain_id, resseq, resname, name, element, altloc are
+      lists; x, y, z are float numpy arrays.
   """
-  # Define values composition
-  func_mapper = {
-                        #"model_id", # model
-                        "id":lambda atom: atom.i_seq,
-                        "model_id":lambda atom: atom.parent().parent().parent().parent().id,
-                        "chain_id":lambda atom: atom.parent().parent().parent().id,
-                        "resseq":lambda atom: atom.parent().parent().resseq_as_int(),
-                        "resname":lambda atom: atom.parent().parent().unique_resnames()[0],
-                        "name":lambda atom: atom.name.strip(),
-                        "element":lambda atom: atom.element,
-                        "altloc": lambda atom: atom.parent().altloc
-  }
-
-  # Build as dictionaries
-  data = defaultdict(list)
+  keys = ("id","model_id","chain_id","resseq","resname","name","element","altloc")
+  cols = {k: [] for k in keys}
   for atom in atoms:
-    for key,func in func_mapper.items():
-      data[key].append(func(atom))
+    ag = atom.parent()          # atom_group
+    rg = ag.parent()            # residue_group
+    chain = rg.parent()         # chain
+    model = chain.parent()      # model
+    cols["id"].append(atom.i_seq)
+    cols["model_id"].append(model.id)
+    cols["chain_id"].append(chain.id)
+    cols["resseq"].append(rg.resseq_as_int())
+    cols["resname"].append(rg.unique_resnames()[0])
+    cols["name"].append(atom.name.strip())
+    cols["element"].append(atom.element)
+    cols["altloc"].append(ag.altloc)
 
-
-  # Include values non-composition
   xyz = atoms.extract_xyz().as_numpy_array()
-  data["x"] = xyz[:,0]
-  data["y"] = xyz[:,1]
-  data["z"] = xyz[:,2]
-
-  # Build dataframe from dictionaries
-  df_atoms = pd.DataFrame(data,index=list(range(len(atoms))))
-
-  return df_atoms
+  cols["x"] = xyz[:,0]
+  cols["y"] = xyz[:,1]
+  cols["z"] = xyz[:,2]
+  return cols
