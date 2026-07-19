@@ -48,6 +48,7 @@ tst_list = [
   "$D/maptbx/boost_python/tst_maptbx.py",
   "$D/maptbx/tst_loft.py",
   "$D/maptbx/tst_MapPeakLocator.py",
+  "$D/maptbx/tst_qscore.py",
   "$D/dmtbx/boost_python/tst_dmtbx.py",
   "$D/translation_search/boost_python/tst_translation_search.py",
   "$D/geometry_restraints/tst_ext.py",
