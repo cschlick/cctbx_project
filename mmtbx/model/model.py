@@ -3993,10 +3993,30 @@ class manager(object):
       new._type_energies = self._type_energies.select(selection)
       new._type_h_bonds = self._type_h_bonds.select(selection)
     if(SAVE_scatering_table is not None and
-       SAVE_scatering_table in known_scattering_tables and
-       SAVE_scatering_table != "n_gaussian" # setting this requires d_min!!!!!!!
-       ):
-      new.setup_scattering_dictionaries(scattering_table=SAVE_scatering_table)
+       SAVE_scatering_table in known_scattering_tables):
+      if(SAVE_scatering_table == "n_gaussian"):
+        # n_gaussian: select() already carries the scattering_type_registry
+        # through to the new xray_structure, so get_scattering_table() is
+        # already correct. Only the lightweight scattering_type_registry_params
+        # metadata was reset by structure.__init__. Restore just that metadata --
+        # do NOT call setup_scattering_dictionaries(), which rebuilds the registry
+        # with d_min=None and drops inelastic form factors, changing refinement
+        # results (phenix_refine deep_copies n_gaussian models constantly).
+        new_xrs = new.get_xray_structure()
+        if(new_xrs is not None):
+          stp = new_xrs.scattering_type_registry_params
+          if(stp is None):
+            src = self._xray_structure.scattering_type_registry_params
+            new_xrs.scattering_type_registry_params = \
+              xray.scattering_type_registry_params(
+                table = "n_gaussian",
+                d_min = (src.d_min if src is not None else None))
+          else:
+            # params object exists (created out-of-date with table=None); just
+            # stamp the table so it matches the preserved registry.
+            stp.table = "n_gaussian"
+      else:
+        new.setup_scattering_dictionaries(scattering_table=SAVE_scatering_table)
     return new
 
   def number_of_ordered_solvent_molecules(self):
