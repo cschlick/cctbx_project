@@ -201,6 +201,18 @@ namespace {
                                     arg("sites_cart"),
                                     arg("selection"),
                                     arg("interpolation"))))
+        .def(init<uctbx::unit_cell const&,
+             af::const_ref<double, af::c_grid_padded<3> > const&,
+             af::const_ref<scitbx::vec3<double> > const&,
+             af::const_ref<bool> const&,
+             std::string const&,
+             af::const_ref<double> const& >((
+                                    arg("unit_cell"),
+                                    arg("map_target"),
+                                    arg("sites_cart"),
+                                    arg("selection"),
+                                    arg("interpolation"),
+                                    arg("weights"))))
         .def("target", &w_t::target)
         .def("gradients", &w_t::gradients)
       ;

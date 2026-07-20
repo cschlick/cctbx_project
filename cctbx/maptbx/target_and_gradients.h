@@ -310,6 +310,47 @@ public:
     af::const_ref<bool> const& selection,
     std::string const& interpolation)
   {
+    analytic_impl(
+      unit_cell, map_data, sites_cart, selection, interpolation, 0);
+  }
+
+  // As above, but with a per-atom weight applied to each site's density
+  // target and gradient (weights must be parallel to sites_cart). This lets
+  // callers emphasize the map fit where the local density quality is high and
+  // lean on the geometry restraints where it is poor. With all weights equal
+  // to 1 the result is identical to the unweighted constructor above.
+  compute(
+    uctbx::unit_cell const& unit_cell,
+    af::const_ref<FloatType, af::c_grid_padded<3> > const& map_data,
+    af::const_ref<scitbx::vec3<FloatType> > const& sites_cart,
+    af::const_ref<bool> const& selection,
+    std::string const& interpolation,
+    af::const_ref<FloatType> const& weights)
+  {
+    CCTBX_ASSERT(weights.size() == sites_cart.size());
+    analytic_impl(
+      unit_cell, map_data, sites_cart, selection, interpolation, &weights);
+  }
+
+  FloatType target_;
+  af::shared<scitbx::vec3<FloatType> > gradients_;
+
+  FloatType target() { return target_; }
+  af::shared<scitbx::vec3<FloatType> > gradients() { return gradients_; }
+
+private:
+
+  // Shared implementation for the two analytic constructors above. When
+  // weights is null every site is weighted by 1 (the unweighted case).
+  void
+  analytic_impl(
+    uctbx::unit_cell const& unit_cell,
+    af::const_ref<FloatType, af::c_grid_padded<3> > const& map_data,
+    af::const_ref<scitbx::vec3<FloatType> > const& sites_cart,
+    af::const_ref<bool> const& selection,
+    std::string const& interpolation,
+    af::const_ref<FloatType> const* weights)
+  {
     gradients_.resize(sites_cart.size(), scitbx::vec3<FloatType>(0,0,0));
     af::c_grid_padded<3> a = map_data.accessor();
     scitbx::vec3<FloatType> step;
@@ -341,18 +382,13 @@ public:
         else {
           throw std::runtime_error("Unknown interpolation mode.");
         }
-        target_ += result[0];
+        FloatType w = (weights == 0) ? FloatType(1) : (*weights)[i_site];
+        target_ += w * result[0];
         gradients_[i_site]=scitbx::vec3<FloatType>(
-          result[1],result[2],result[3]);
+          w*result[1], w*result[2], w*result[3]);
       }
     }
   }
-
-  FloatType target_;
-  af::shared<scitbx::vec3<FloatType> > gradients_;
-
-  FloatType target() { return target_; }
-  af::shared<scitbx::vec3<FloatType> > gradients() { return gradients_; }
 };
 
 // Binary score

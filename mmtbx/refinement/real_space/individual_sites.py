@@ -25,6 +25,7 @@ class easy(object):
         gradients_method="fd",
         selection=None,
         selection_real_space=None,
+        weights=None,
         rms_bonds_limit=0.015,
         rms_angles_limit=2.0,
         max_iterations=150,
@@ -59,6 +60,7 @@ class easy(object):
         max_iterations              = max_iterations,
         geometry_restraints_manager = geometry_restraints_manager.geometry,
         states_accumulator          = states_accumulator,
+        weights                     = weights,
         gradients_method            = gradients_method)
       refine_object.refine(
         weight = self.w, xray_structure = self.xray_structure)
@@ -78,6 +80,7 @@ class simple(object):
         selection_real_space=None,
         max_iterations=150,
         states_accumulator=None,
+        weights=None,
         ncs_groups=None):
     adopt_init_args(self, locals())
     self.lbfgs_core_params = scitbx.lbfgs.core_parameters(
@@ -105,6 +108,7 @@ class simple(object):
         density_map                     = self.target_map,
         geometry_restraints_manager     = self.geometry_restraints_manager,
         real_space_target_weight        = weight,
+        weights                         = self.weights,
         real_space_gradients_delta      = self.real_space_gradients_delta,
         lbfgs_core_params               = self.lbfgs_core_params,
         lbfgs_termination_params        = self.lbfgs_termination_params,
