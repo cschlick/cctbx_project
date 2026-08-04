@@ -701,11 +701,18 @@ Note:
 
 
   def _describe_atom_for_debug(self, a):
-      resName = a.parent().resname.strip().upper()
-      resID = str(a.parent().parent().resseq_as_int())
-      chainID = a.parent().parent().parent().id
-      iCode = a.parent().parent().icode
-      alt = a.parent().altloc
+      # This exists only to build an error message, so it must never be able to raise one of
+      # its own. Every level of the parent chain can be absent for a detached atom, and
+      # dereferencing them unguarded turned a clear "Found Hydrogen with no neigbors" report
+      # into an unrelated AttributeError that pointed at the caller instead of the data.
+      ag = a.parent()
+      rg = ag.parent() if ag is not None else None
+      ch = rg.parent() if rg is not None else None
+      resName = ag.resname.strip().upper() if ag is not None else "???"
+      resID = str(rg.resseq_as_int()) if rg is not None else "?"
+      chainID = ch.id if ch is not None else "?"
+      iCode = rg.icode if rg is not None else " "
+      alt = ag.altloc if ag is not None else " "
       return "{:>2s}{:>4s}{}{} {}{:1s}".format(chainID, resID, iCode, resName, a.name, alt)
 
 # ------------------------------------------------------------------------------
