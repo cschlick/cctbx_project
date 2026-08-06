@@ -386,7 +386,7 @@ general_tests = [
   "$D/regression/tst_polder_box.py",
   "$D/regression/tst_polder_ccs.py",
   "$D/regression/tst_map_model_cc.py",
-  "$D/regression/tst_local_cc_ref.py",
+  "$D/regression/tst_local_c_ref.py",
   "$D/regression/tst_local_diff_z.py",
   "$D/regression/tst_model_map.py",
   #
@@ -425,7 +425,7 @@ general_tests = [
   "$D/ions/tst_environment.py",
   "$D/regression/tst_table_one.py",
   "$D/regression/tst_msa.py",
-  "$D/regression/tst_cc_ref.py",
+  "$D/regression/tst_c_ref.py",
   "$D/regression/tst_fmodel_2.py",
   "$D/regression/tst_rigid_bond_test.py",
   "$D/validation/regression/tst_cablam.py",
