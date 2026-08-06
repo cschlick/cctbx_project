@@ -1,6 +1,6 @@
 """
 mmtbx.local_diff_z -- native per-residue map-model *accuracy* metric: a
-difference-density Z-score. The accuracy sibling of mmtbx.local_cc_star.
+difference-density Z-score. The accuracy sibling of mmtbx.local_c_ref.
 
   phenix.local_diff_z model.cif full_map=emd.map \\
       half_map_1=half1.map half_map_2=half2.map resolution=3.2
