@@ -1,7 +1,7 @@
 """
 Per-VOXEL local map-model correlation field (raw cc_mapmodel).
 
-The voxel-wise companion to ``mmtbx.maps.local_c_ref``: instead of one CC per
+The voxel-wise companion to ``mmtbx.maps.local_cc_ref``: instead of one CC per
 residue, it returns cc_mapmodel on a grid, so the local fit can be written to an
 MRC/CCP4 map and coloured on a surface in ChimeraX / PyMOL. No CC* ceiling and
 no gap here -- this is only the raw local CC(full map, model-calculated map).

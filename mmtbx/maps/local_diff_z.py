@@ -1,7 +1,7 @@
 """
 Local (per-residue) map-model *accuracy* metric: a difference-density Z-score.
 
-Where local_c_ref measures agreement/precision (does the model correlate with
+Where local_cc_ref measures agreement/precision (does the model correlate with
 the map here), this measures accuracy (is there density the model fails to
 explain, or model where there is no density). It is built on the same scaled
 Fo - Fc residual that phenix.real_space_diff_map writes (mmtbx.maps.diff_map),
@@ -29,7 +29,7 @@ density-strength confound and leaves a genuine accuracy signal. (h1 and h2 are
 independent halves, so var(h1-h2) = 2*var(half) and the full map = (h1+h2)/2 has
 noise sigma = rms(h1-h2)/2.)
 
-This is the *accuracy* sibling of mmtbx.maps.local_c_ref (precision); the two
+This is the *accuracy* sibling of mmtbx.maps.local_cc_ref (precision); the two
 share inputs (model + full + half maps), frame handling, and the per-residue
 windowing primitive (mmtbx.maps.correlation.grid_indices_around_sites).
 """

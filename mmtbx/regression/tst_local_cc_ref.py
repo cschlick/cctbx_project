@@ -1,5 +1,5 @@
 """
-Regression test for mmtbx.maps.local_c_ref (per-residue local map-model CC
+Regression test for mmtbx.maps.local_cc_ref (per-residue local map-model CC
 with a half-map derived CC* ceiling).
 
 Self-contained: builds a synthetic model + map + two independently-noised half
@@ -12,18 +12,18 @@ from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 from libtbx.test_utils import approx_equal
 from iotbx.map_model_manager import map_model_manager
-from mmtbx.maps import local_c_ref as lcs
+from mmtbx.maps import local_cc_ref as lcs
 
 
-def exercise_c_ref_formula():
+def exercise_cc_ref_formula():
   # CC* = sqrt(2r/(1+r)): perfect -> 1, zero -> 0, monotonic, ceiling >= r.
-  assert approx_equal(lcs.c_ref_from_cc_half(1.0), 1.0)
-  assert approx_equal(lcs.c_ref_from_cc_half(0.0), 0.0)
-  assert lcs.c_ref_from_cc_half(None) is None
-  assert lcs.c_ref_from_cc_half(-1.0) == 0.0
+  assert approx_equal(lcs.cc_ref_from_cc_half(1.0), 1.0)
+  assert approx_equal(lcs.cc_ref_from_cc_half(0.0), 0.0)
+  assert lcs.cc_ref_from_cc_half(None) is None
+  assert lcs.cc_ref_from_cc_half(-1.0) == 0.0
   prev = -1.0
   for r in [0.1, 0.3, 0.5, 0.7, 0.9, 0.99]:
-    cs = lcs.c_ref_from_cc_half(r)
+    cs = lcs.cc_ref_from_cc_half(r)
     assert cs > r            # ceiling always above the half-half CC
     assert cs > prev         # monotonically increasing
     assert cs <= 1.0 + 1e-9
@@ -53,7 +53,7 @@ def _synthetic_case():
 def _score(mmm, model, radius=3.0):
   mmm.generate_map(model=model, d_min=3.0, map_id="model_map")
   def md(i): return mmm.get_map_manager_by_id(i).map_data()
-  return lcs.per_residue_local_c_ref(
+  return lcs.per_residue_local_cc_ref(
     map_data_full=md("map_manager"), model_map_data=md("model_map"),
     unit_cell=mmm.map_manager().crystal_symmetry().unit_cell(), model=model,
     map_data_half1=md("map_manager_1"), map_data_half2=md("map_manager_2"),
@@ -67,7 +67,7 @@ def exercise_perfect_model():
   assert r.n_residues == mmm.model().get_hierarchy().overall_counts().n_residues
   # map was generated from the model -> high fit, and the ceiling sits above it.
   assert r.cc_mapmodel_mean > 0.9, r.cc_mapmodel_mean
-  assert r.c_ref_mean >= r.cc_mapmodel_mean, (r.c_ref_mean, r.cc_mapmodel_mean)
+  assert r.cc_ref_mean >= r.cc_mapmodel_mean, (r.cc_ref_mean, r.cc_mapmodel_mean)
   # a matching model should not be flagged as over-ceiling (overfitting).
   assert r.n_over_ceiling == 0, r.n_over_ceiling
 
@@ -97,11 +97,11 @@ def exercise_localization():
   # every perturbed residue scores well below every unperturbed one.
   assert max(bad) < min(good) - 0.2, (bad, good)
   # the ceiling (map quality) is unchanged by the model error.
-  assert r.c_ref_mean > 0.9, r.c_ref_mean
+  assert r.cc_ref_mean > 0.9, r.cc_ref_mean
 
 
 def run():
-  exercise_c_ref_formula()
+  exercise_cc_ref_formula()
   exercise_perfect_model()
   exercise_localization()
 

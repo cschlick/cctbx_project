@@ -1,13 +1,13 @@
 """
-mmtbx.local_c_ref -- native per-residue map-model agreement with a half-map
+mmtbx.local_cc_ref -- native per-residue map-model agreement with a half-map
 derived CC* ceiling. The cctbx equivalent of Servalcat's ``localcc`` scores.
 
-  phenix.local_c_ref model.cif full_map=emd.map \\
+  phenix.local_cc_ref model.cif full_map=emd.map \\
       half_map_1=half1.map half_map_2=half2.map resolution=3.2
 
 Reports, per residue: local CC(map, model), local CC(half1, half2), the CC*
 ceiling sqrt(2r/(1+r)) implied by the local half-map quality, and the gap
-between them. See mmtbx/maps/local_c_ref.py for the definitions.
+between them. See mmtbx/maps/local_cc_ref.py for the definitions.
 """
 from __future__ import absolute_import, division, print_function
 
@@ -15,18 +15,18 @@ import json
 
 from libtbx.program_template import ProgramTemplate
 from libtbx.utils import Sorry
-from mmtbx.maps import local_c_ref as lcs
+from mmtbx.maps import local_cc_ref as lcs
 
 # =============================================================================
 
 master_phil_str = """
-local_c_ref {
+local_cc_ref {
   full_map = None
     .type = path
     .help = "Full (deposited) map. Defines the working frame."
   half_map_1 = None
     .type = path
-    .help = "Half map 1. Provide with half_map_2 to get cc_half/c_ref."
+    .help = "Half map 1. Provide with half_map_2 to get cc_half/cc_ref."
   half_map_2 = None
     .type = path
     .help = "Half map 2."
@@ -61,15 +61,15 @@ local_c_ref {
 class Program(ProgramTemplate):
 
   description = """
-mmtbx.local_c_ref -- per-residue local map-model CC with a half-map CC* ceiling.
+mmtbx.local_cc_ref -- per-residue local map-model CC with a half-map CC* ceiling.
 
 Usage:
-  phenix.local_c_ref model.cif local_c_ref.full_map=full.map \\
-      local_c_ref.half_map_1=h1.map local_c_ref.half_map_2=h2.map \\
-      local_c_ref.resolution=3.2
+  phenix.local_cc_ref model.cif local_cc_ref.full_map=full.map \\
+      local_cc_ref.half_map_1=h1.map local_cc_ref.half_map_2=h2.map \\
+      local_cc_ref.resolution=3.2
 
 Per residue it reports local CC(map,model), local CC(half1,half2), the CC*
-ceiling implied by that local map quality, and the gap c_ref - cc_mapmodel
+ceiling implied by that local map quality, and the gap cc_ref - cc_mapmodel
 (negative gap = model correlates above the noise ceiling = overfitting).
 """
 
@@ -78,20 +78,20 @@ ceiling implied by that local map quality, and the gap c_ref - cc_mapmodel
 
   # ---------------------------------------------------------------------------
   def validate(self):
-    p = self.params.local_c_ref
+    p = self.params.local_cc_ref
     if self.data_manager.get_default_model_name() is None:
       raise Sorry("A model (pdb/cif) is required.")
     if p.full_map is None:
-      raise Sorry("local_c_ref.full_map is required.")
+      raise Sorry("local_cc_ref.full_map is required.")
     if (p.half_map_1 is None) != (p.half_map_2 is None):
       raise Sorry("Provide both half maps or neither.")
     if p.half_map_1 is None:
-      self._print("WARNING: no half maps -> cc_half/c_ref unavailable; only "
+      self._print("WARNING: no half maps -> cc_half/cc_ref unavailable; only "
                   "cc_mapmodel will be reported.")
 
   # ---------------------------------------------------------------------------
   def run(self):
-    p = self.params.local_c_ref
+    p = self.params.local_cc_ref
     mmm, have_halves = self._build_frame(p)
 
     resolution = p.resolution or mmm.resolution()
@@ -115,7 +115,7 @@ ceiling implied by that local map quality, and the gap c_ref - cc_mapmodel
     if p.selection is not None:
       selection = model.selection(p.selection)
 
-    self.results = lcs.per_residue_local_c_ref(
+    self.results = lcs.per_residue_local_cc_ref(
       map_data_full=_md('map_manager'),
       model_map_data=_md('model_map'),
       unit_cell=mmm.map_manager().crystal_symmetry().unit_cell(),
@@ -169,7 +169,7 @@ ceiling implied by that local map quality, and the gap c_ref - cc_mapmodel
         mm = _rm(path)
         if not self._same_cell(mm, mm_full):
           self._print("  WARNING: half map %s unit cell differs from full map "
-                      "-> frame mismatch; cc_half/c_ref unavailable." % map_id)
+                      "-> frame mismatch; cc_half/cc_ref unavailable." % map_id)
           ok = False
           break
         if tuple(mm.map_data().all()) != full_grid:
@@ -199,13 +199,13 @@ ceiling implied by that local map quality, and the gap c_ref - cc_mapmodel
     def f(v):
       return "  --  " if v is None else "%.4f" % v
     self._print("")
-    self._print("=== mmtbx.local_c_ref (%d residues, radius %.2f A) ==="
+    self._print("=== mmtbx.local_cc_ref (%d residues, radius %.2f A) ==="
                 % (r.n_residues, r.radius))
     self._print("mean cc_mapmodel : %s" % f(r.cc_mapmodel_mean))
     if r.have_halves:
       self._print("mean cc_half     : %s" % f(r.cc_half_mean))
-      self._print("mean c_ref     : %s   (local ceiling)" % f(r.c_ref_mean))
-      self._print("residues over ceiling (cc_mapmodel > c_ref): %d / %d%s"
+      self._print("mean cc_ref     : %s   (local ceiling)" % f(r.cc_ref_mean))
+      self._print("residues over ceiling (cc_mapmodel > cc_ref): %d / %d%s"
                   % (r.n_over_ceiling, r.n_residues,
                      "  -- possible overfitting" if r.n_over_ceiling else ""))
     # worst-fitting residues by gap to ceiling (or by cc_mapmodel if no halves)
@@ -213,11 +213,11 @@ ceiling implied by that local map quality, and the gap c_ref - cc_mapmodel
     if r.have_halves:
       worst = sorted([x for x in r.residues if x.cc_gap is not None],
                      key=lambda x: x.cc_gap, reverse=True)[:10]
-      self._print("  chain resseq resname   cc_mm   cc_half  c_ref   gap")
+      self._print("  chain resseq resname   cc_mm   cc_half  cc_ref   gap")
       for x in worst:
         self._print("  %-5s %-6s %-7s  %6.3f  %6.3f   %6.3f  %+6.3f"
                     % (x.chain_id, x.resseq + x.icode, x.resname,
-                       x.cc_mapmodel, x.cc_half, x.c_ref, x.cc_gap))
+                       x.cc_mapmodel, x.cc_half, x.cc_ref, x.cc_gap))
     else:
       worst = sorted(r.residues, key=lambda x: x.cc_mapmodel)[:10]
       self._print("  chain resseq resname   cc_mm")
@@ -260,10 +260,10 @@ ceiling implied by that local map quality, and the gap c_ref - cc_mapmodel
       n_residues=r.n_residues,
       cc_mapmodel_mean=r.cc_mapmodel_mean,
       cc_half_mean=r.cc_half_mean,
-      c_ref_mean=r.c_ref_mean,
+      cc_ref_mean=r.cc_ref_mean,
       n_over_ceiling=r.n_over_ceiling,
       residues=[dict(chain_id=x.chain_id, resseq=x.resseq, icode=x.icode,
                      resname=x.resname, n_atoms=x.n_atoms,
                      cc_mapmodel=x.cc_mapmodel, cc_half=x.cc_half,
-                     c_ref=x.c_ref, cc_gap=x.cc_gap)
+                     cc_ref=x.cc_ref, cc_gap=x.cc_gap)
                 for x in r.residues])
